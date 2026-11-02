@@ -1,0 +1,14 @@
+# ESP-IDF
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+
+# Python
+__pycache__/
+*.py[cod]
+
+# IDEs and operating systems
+.idea/
+.vscode/
+.DS_Store
