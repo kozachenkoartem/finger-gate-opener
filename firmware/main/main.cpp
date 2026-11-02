@@ -1,21 +1,16 @@
-#include <cstdint>
-
+#include "driver/gpio.h"
 #include "esp_chip_info.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "led_strip.h"
-#include "led_strip_rmt.h"
 
 namespace {
 
 constexpr char kLogTag[] = "board_check";
 constexpr int kLedGpio = 8;
-constexpr uint32_t kLedCount = 1;
-constexpr uint32_t kRmtResolutionHz = 10 * 1000 * 1000;
-constexpr TickType_t kColorDelay = pdMS_TO_TICKS(1000);
+constexpr TickType_t kBlinkDelay = pdMS_TO_TICKS(1000);
 
 const char* chip_model_name(esp_chip_model_t model)
 {
@@ -82,31 +77,6 @@ const char* reset_reason_name(esp_reset_reason_t reason)
     }
 }
 
-led_strip_handle_t initialize_led_strip()
-{
-    led_strip_config_t strip_config = {};
-    strip_config.strip_gpio_num = kLedGpio;
-    strip_config.max_leds = kLedCount;
-    strip_config.led_model = LED_MODEL_WS2812;
-    strip_config.color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB;
-
-    led_strip_rmt_config_t rmt_config = {};
-    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
-    rmt_config.resolution_hz = kRmtResolutionHz;
-
-    led_strip_handle_t led_strip = nullptr;
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-    ESP_ERROR_CHECK(led_strip_clear(led_strip));
-    return led_strip;
-}
-
-void show_color(led_strip_handle_t led_strip, uint8_t red, uint8_t green, uint8_t blue)
-{
-    ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, red, green, blue));
-    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-    vTaskDelay(kColorDelay);
-}
-
 }
 
 extern "C" void app_main()
@@ -121,10 +91,15 @@ extern "C" void app_main()
     ESP_LOGI(kLogTag, "Last reset: %s (%d)", reset_reason_name(reset_reason), reset_reason);
     ESP_LOGI(kLogTag, "Free heap: %lu bytes", static_cast<unsigned long>(esp_get_free_heap_size()));
 
-    const led_strip_handle_t led_strip = initialize_led_strip();
+    gpio_config_t gpio_configuration = {};
+    gpio_configuration.pin_bit_mask = 1ULL << kLedGpio;
+    gpio_configuration.mode = GPIO_MODE_OUTPUT;
+    ESP_ERROR_CHECK(gpio_config(&gpio_configuration));
+
     while (true) {
-        show_color(led_strip, 255, 0, 0);
-        show_color(led_strip, 0, 255, 0);
-        show_color(led_strip, 0, 0, 255);
+        ESP_ERROR_CHECK(gpio_set_level(static_cast<gpio_num_t>(kLedGpio), 1));
+        vTaskDelay(kBlinkDelay);
+        ESP_ERROR_CHECK(gpio_set_level(static_cast<gpio_num_t>(kLedGpio), 0));
+        vTaskDelay(kBlinkDelay);
     }
 }
