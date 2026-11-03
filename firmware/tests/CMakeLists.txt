@@ -21,3 +21,14 @@ target_compile_features(finger_gate_model_test PRIVATE cxx_std_17)
 target_include_directories(finger_gate_model_test PRIVATE ../main)
 
 add_test(NAME finger_gate_model_test COMMAND finger_gate_model_test)
+
+add_executable(user_store_test
+    user_store_test.cpp
+    ../main/finger_gate_model.cpp
+    ../main/user_store.cpp
+    ../main/audit_events.cpp)
+
+target_compile_features(user_store_test PRIVATE cxx_std_17)
+target_include_directories(user_store_test PRIVATE ../main)
+
+add_test(NAME user_store_test COMMAND user_store_test)
