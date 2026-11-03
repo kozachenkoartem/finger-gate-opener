@@ -20,6 +20,8 @@ body{font:16px system-ui;max-width:650px;margin:40px auto;padding:0 20px;backgro
 <section id="adminSection" hidden>
 <h2>Device and network</h2><pre id="network"></pre><p id="address"></p>
 <button id="refresh">Refresh status</button><button id="finish" hidden>Finish setup and close AP</button>
+<p id="recoveryInfo"></p><button id="openRecovery">Open recovery AP (5 minutes)</button>
+<form id="apPassword"><label>Individual FingerGate AP password (8–63 printable ASCII characters)<input name="password" type="password" minlength="8" maxlength="63" autocomplete="new-password" required></label><button>Save AP password</button></form>
 <div id="wifiSection" hidden><h3>Wi-Fi setup</h3><form id="wifi"><label>SSID<input name="ssid" required maxlength="32"></label><label>Wi-Fi password<input name="password" type="password" autocomplete="off" maxlength="63"></label><button>Connect</button></form></div>
 <h2>Fingerprints</h2>
 <p>New fingerprints are Users. Assign Master explicitly below (at most two). GPIO8 lights for one second when access is granted; openings have a ten-second cooldown.</p>
@@ -31,18 +33,60 @@ body{font:16px system-ui;max-width:650px;margin:40px auto;padding:0 20px;backgro
 <button id="logout" hidden>Sign out</button>
 <script>
 const byId=id=>document.getElementById(id);
-let csrf='',pollTimer=0,polls=0,fingerTimer=0,enrollmentId=0,commandPending=false,usersKey='';
+let csrf='',pollTimer=0,fingerTimer=0,enrollmentId=0,commandPending=false,usersKey='',networkPending=false,lastNetwork=null,pendingWifiCommand=0;
 const message=text=>{byId('message').textContent=text;};
 async function api(path,data){const options={credentials:'same-origin',headers:{}};if(data!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(data);}const response=await fetch('/api/'+path,options);const value=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Error(value.error||'Request failed');}return value;}
-function showLogin(){clearTimeout(pollTimer);clearTimeout(fingerTimer);csrf='';usersKey='';['passwordSection','adminSection','logout'].forEach(id=>byId(id).hidden=true);byId('loginSection').hidden=false;}
+function showLogin(){clearTimeout(pollTimer);clearTimeout(fingerTimer);csrf='';usersKey='';pendingWifiCommand=0;['passwordSection','adminSection','logout'].forEach(id=>byId(id).hidden=true);byId('loginSection').hidden=false;}
 async function showSession(value){csrf=value.csrf;byId('loginSection').hidden=true;byId('logout').hidden=false;byId('passwordSection').hidden=false;byId('adminSection').hidden=value.password_change_required;if(value.password_change_required){message('Replace the default administrator password to continue.');}else{message('Signed in.');await refresh();await refreshFingerprints();}}
-async function refresh(){const state=await api('status');byId('network').textContent=state.message+'\nSTA IP: '+(state.sta_ip||'not connected')+'\nAP IP: '+(state.ap_ip||'off')+'\nHostname: '+state.hostname+'.local';byId('address').textContent=state.sta_ip?'Administration: https://'+state.sta_ip+'/ or https://'+state.hostname+'.local/':'';byId('finish').hidden=state.state!=='connected'||!state.ap_ip;byId('wifiSection').hidden=!state.ap_ip||state.state==='connected';if(state.state==='connecting'&&polls++<45){pollTimer=setTimeout(()=>refresh().catch(e=>message(e.message)),1000);}else{polls=0;}}
+async function refresh(){
+ clearTimeout(pollTimer);
+ const state=await api('status');lastNetwork=state;
+ const receipt=state.network_command;
+ if(pendingWifiCommand&&receipt?.id===pendingWifiCommand&&!['reserved','queued'].includes(receipt.result)){
+  pendingWifiCommand=0;
+  message(receipt.result==='ok'?state.message:'Wi-Fi trial was not started: '+receipt.result+'. Refresh network status before retrying.');
+ }
+ byId('network').textContent=state.message+'\nWi-Fi: '+(state.ssid||'not configured')+'\nSTA IP: '+(state.sta_ip||'not connected')+'\nAP IP: '+(state.ap_ip||'off')+'\nHostname: '+state.hostname+'.local'+'\nLast network trial: '+(state.last_trial||'none');
+ byId('address').textContent=state.sta_ip?'Administration: https://'+state.sta_ip+'/ or https://'+state.hostname+'.local/':'';
+ byId('finish').hidden=state.state!=='connected'||!state.ap_active||state.trial;
+ byId('wifiSection').hidden=!state.ap_active;
+ byId('wifi').querySelector('button').disabled=!!state.trial||!!state.ap_closing||networkPending;
+ byId('openRecovery').disabled=!!state.ap_active||networkPending;
+ byId('apPassword').hidden=!!state.ap_active;
+ byId('recoveryInfo').textContent=state.ap_active?'AP '+state.ap_ssid+' is active'+(state.recovery?' for '+Math.ceil(state.ap_remaining_ms/1000)+' seconds':'')+'. Join this AP, then open https://192.168.4.1/ and sign in to change Wi-Fi. AP password: '+(state.ap_password_custom?'individual password you set.':'developer default (fingergate).'):'AP is off. Its password is '+(state.ap_password_custom?'individually configured.':'still the developer default.');
+ if(state.ap_active||['connecting','restoring','reconnecting'].includes(state.state)||networkPending){
+  pollTimer=setTimeout(()=>refresh().catch(()=>message('Network connection changed. Rejoin FingerGate AP and open https://192.168.4.1/, or open the device HTTPS address on the saved network.')),1000);
+ }
+ return state;
+}
 function onForm(id,action){byId(id).onsubmit=async event=>{event.preventDefault();const button=event.target.querySelector('button');button.disabled=true;try{await action(Object.fromEntries(new FormData(event.target)));event.target.reset();}catch(error){message(error.message);}finally{button.disabled=false;}};}
 onForm('login',async data=>showSession(await api('login',data)));
 onForm('password',async data=>{await api('password',data);showLogin();message('Password saved. Sign in with your new password.');});
-onForm('wifi',async data=>{await api('wifi',data);message('Connecting…');clearTimeout(pollTimer);polls=0;await refresh();});
+async function networkCommand(path,data){
+ if(networkPending)throw Error('Wait for the current network command.');
+ networkPending=true;
+ try{
+  const queued=await api(path,data);
+  if(path==='wifi'){pendingWifiCommand=queued.command_id;message('New Wi-Fi trial queued. Keep connected to FingerGate AP at https://192.168.4.1/ to watch the result. Failed trials restore the previous network.');pollTimer=setTimeout(()=>refresh().catch(()=>message('Reconnect to FingerGate AP and open https://192.168.4.1/ to check the trial result.')),1000);return;}
+  if(path==='acknowledge'){clearTimeout(pollTimer);message('AP closure queued. Rejoin your local Wi-Fi and open the HTTPS address shown above.');byId('finish').hidden=true;return;}
+  for(let attempt=0;attempt<15;attempt++){
+   await new Promise(resolve=>setTimeout(resolve,500));
+   let state;
+   try{state=await refresh();}catch(error){if(path==='network/recovery'){message('Recovery AP request accepted. If this connection dropped, join FingerGate AP and open https://192.168.4.1/ with your existing administrator password.');return;}throw error;}
+   const result=state.network_command;
+   if(result?.id===queued.command_id&&!['reserved','queued'].includes(result.result)){
+    if(result.result!=='ok')throw Error('Network command: '+result.result);
+    message(path==='network/ap-password'?'AP password saved. The next recovery opening may briefly reconnect Wi-Fi to apply it.':'Recovery AP opened. Join it before changing the station network.');return;
+   }
+  }
+  throw Error('Network command outcome is not yet available; refresh status before retrying.');
+ }finally{networkPending=false;byId('openRecovery').disabled=!!lastNetwork?.ap_active;}
+}
+onForm('wifi',data=>networkCommand('wifi',data));
+onForm('apPassword',data=>networkCommand('network/ap-password',data));
+byId('openRecovery').onclick=()=>networkCommand('network/recovery',{}).catch(e=>message(e.message));
 byId('refresh').onclick=()=>Promise.all([refresh(),refreshFingerprints()]).catch(e=>message(e.message));
-byId('finish').onclick=async()=>{try{await api('acknowledge',{});clearTimeout(pollTimer);byId('finish').hidden=true;message('Setup complete. AP is closing. Rejoin your local Wi-Fi and open the HTTPS address shown above.');}catch(e){message(e.message);}};
+byId('finish').onclick=()=>networkCommand('acknowledge',{}).catch(e=>message(e.message));
 byId('logout').onclick=async()=>{try{await api('logout',{});showLogin();message('Signed out.');}catch(e){message(e.message);}};
 const instruction={remove_finger:'Remove your finger completely.',place_finger:'Place the same finger on the sensor.',capture:'Hold still: capturing image.',convert:'Processing scan.',duplicate_check:'Checking for an existing fingerprint.',create_model:'Creating fingerprint model.',stage:'Preparing persistent record.',store:'Saving sensor template.',verify_index:'Verifying sensor storage.',verify_search:'Verifying stored fingerprint.',commit:'Saving user metadata.',rollback:'Rolling back failed enrollment.',rollback_index:'Verifying rollback.',discard:'Cleaning incomplete metadata.',success:'Fingerprint saved. Remove your finger before testing access.',cancelled:'Enrollment cancelled.',failed:'Enrollment failed.',idle:'Ready to recognize registered fingerprints.',initializing:'Initializing sensor.'};
 function renderFingerprints(value){

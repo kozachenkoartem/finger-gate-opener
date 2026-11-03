@@ -84,7 +84,7 @@ esp_err_t AdminServer::initialize()
 {
     if (auth_.initialize() != AuthResult::Ok || !identity_.initialize(storage_, provisioning_.hostname())) return ESP_FAIL;
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-    config.httpd.max_uri_handlers = 16;
+    config.httpd.max_uri_handlers = 18;
     config.httpd.max_open_sockets = 3;
     config.httpd.max_resp_headers = 12;
     config.httpd.stack_size = 12288;
@@ -100,7 +100,8 @@ esp_err_t AdminServer::initialize()
                             {"/api/wifi", HTTP_POST}, {"/api/acknowledge", HTTP_POST},
                             {"/api/fingerprints", HTTP_GET}, {"/api/enrollment/start", HTTP_POST},
                             {"/api/enrollment/cancel", HTTP_POST}, {"/api/users/rename", HTTP_POST},
-                            {"/api/users/role", HTTP_POST}, {"/api/users/delete", HTTP_POST}}) {
+                            {"/api/users/role", HTTP_POST}, {"/api/users/delete", HTTP_POST},
+                            {"/api/network/recovery", HTTP_POST}, {"/api/network/ap-password", HTTP_POST}}) {
         const httpd_uri_t uri = {.uri = route.uri, .method = route.method, .handler = handler, .user_ctx = this};
         const esp_err_t result = httpd_register_uri_handler(server_, &uri);
         if (result != ESP_OK) { httpd_ssl_stop(server_); server_ = nullptr; return result; }
@@ -166,6 +167,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         if (path == "/api/login") allowed = {"username", "password"};
         if (path == "/api/password") allowed = {"new_password"};
         if (path == "/api/wifi") allowed = {"ssid", "password"};
+        if (path == "/api/network/ap-password") allowed = {"password"};
         if (path == "/api/enrollment/start") allowed = {"name"};
         if (path == "/api/enrollment/cancel") allowed = {"operation_id"};
         if (path == "/api/users/rename") allowed = {"slot", "name"};
@@ -230,16 +232,20 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         if (result == AuthResult::Ok) clear_cookie(request);
         return auth_response(request, result);
     }
-    if (path == "/api/wifi") {
-        const esp_err_t result = provisioning_.configure_wifi({fields["ssid"], fields["password"]});
-        ESP_LOGI(kLogTag, "Audit: Wi-Fi setup result %d", result);
-        return result == ESP_OK ? json_response(request, "202 Accepted", "{\"ok\":true}") :
-            json_response(request, "400 Bad Request", "{\"error\":\"Wi-Fi setup requires an idle provisioning AP and valid credentials\"}");
-    }
-    if (path == "/api/acknowledge") {
-        if (provisioning_.acknowledge(false) != ESP_OK) return json_response(request, "400 Bad Request", "{\"error\":\"Provisioning is not ready for acknowledgement\"}");
-        const esp_err_t sent = json_response(request, "200 OK", "{\"ok\":true}");
-        if (sent == ESP_OK) provisioning_.acknowledge();
+    if (path == "/api/wifi" || path == "/api/acknowledge" || path == "/api/network/recovery" || path == "/api/network/ap-password") {
+        const auto operation = path == "/api/wifi" ? NetworkOperation::Configure :
+            path == "/api/acknowledge" ? NetworkOperation::Acknowledge :
+            path == "/api/network/recovery" ? NetworkOperation::Recovery : NetworkOperation::ApPassword;
+        const WifiCredentials credentials = operation == NetworkOperation::Configure ? WifiCredentials{fields["ssid"], fields["password"]} : WifiCredentials{};
+        if ((operation == NetworkOperation::Configure && !valid_wifi_credentials(credentials)) ||
+            (operation == NetworkOperation::ApPassword && !valid_ap_password(fields["password"]))) {
+            return json_response(request, "400 Bad Request", "{\"error\":\"Invalid Wi-Fi settings; AP password must be 8 to 63 printable ASCII bytes\"}");
+        }
+        const uint32_t id = provisioning_.reserve(operation, credentials,
+            operation == NetworkOperation::ApPassword ? fields["password"] : "");
+        if (!id) return json_response(request, "503 Service Unavailable", "{\"error\":\"Network operation busy or unavailable in current state\"}");
+        const esp_err_t sent = json_response(request, "202 Accepted", "{\"command_id\":" + std::to_string(id) + "}");
+        provisioning_.finish_response(id, sent == ESP_OK);
         return sent;
     }
     return json_response(request, "404 Not Found", "{\"error\":\"Unknown endpoint\"}");

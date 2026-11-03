@@ -6,6 +6,8 @@
 namespace fg {
 
 bool should_start_provisioning(StoreResult credentials_result);
+bool valid_wifi_credentials(const WifiCredentials& credentials);
+bool valid_ap_password(const std::string& password);
 
 class ConfigStore {
 public:
@@ -13,6 +15,8 @@ public:
 
     StoreResult save_wifi(const WifiCredentials& credentials);
     StoreResult load_wifi(WifiCredentials* credentials) const;
+    StoreResult save_ap_password(const std::string& password);
+    StoreResult load_ap_password(std::string* password, bool* custom) const;
 
 private:
     KeyValueStore& storage_;

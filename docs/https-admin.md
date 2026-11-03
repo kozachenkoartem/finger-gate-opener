@@ -3,8 +3,9 @@
 Реализована основа Tasks 6–7 общего плана: вход, обязательная смена начального
 пароля, сессии, CSRF, статус сети и защищённая первоначальная настройка Wi-Fi.
 Управление отпечатками и индикатор открывания описаны в
-[`fingerprint-access.md`](fingerprint-access.md). Настройка длительности реле,
-recovery AP и постоянный журнал аудита остаются следующим этапам общего плана.
+[`fingerprint-access.md`](fingerprint-access.md), recovery AP и смена сети —
+в [`network-recovery.md`](network-recovery.md). Настройка длительности реле
+и постоянный журнал аудита остаются следующим этапам общего плана.
 
 ## Доступ
 
@@ -35,8 +36,10 @@ recovery AP и постоянный журнал аудита остаются �
 | `POST /api/password` | JSON `new_password`; завершает все сессии |
 | `POST /api/logout` | JSON `{}`; завершает текущую сессию |
 | `GET /api/status` | Статус устройства и адреса без секретов |
-| `POST /api/wifi` | JSON `ssid`, `password`; только в первоначальном AP |
+| `POST /api/wifi` | JSON `ssid`, `password`; в первоначальном или recovery AP |
 | `POST /api/acknowledge` | JSON `{}`; закрывает AP после отправки ответа |
+| `POST /api/network/recovery` | JSON `{}`; временный AP для смены сети |
+| `POST /api/network/ap-password` | JSON `password`; индивидуальный пароль AP |
 
 Кроме login все API требуют cookie; POST также требует `X-CSRF-Token`.
 Во время обязательной замены пароля разрешены только session/password/logout.

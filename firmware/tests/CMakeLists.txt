@@ -100,3 +100,16 @@ target_compile_features(fingerprint_controller_test PRIVATE cxx_std_17)
 target_include_directories(fingerprint_controller_test PRIVATE ../main)
 
 add_test(NAME fingerprint_controller_test COMMAND fingerprint_controller_test)
+
+add_executable(wifi_state_test wifi_state_test.cpp
+    ../main/wifi_lifecycle.cpp ../main/wifi_event_gate.cpp
+    ../main/config_store.cpp ../main/user_store.cpp ../main/finger_gate_model.cpp)
+target_compile_features(wifi_state_test PRIVATE cxx_std_17)
+target_include_directories(wifi_state_test PRIVATE ../main)
+add_test(NAME wifi_state_test COMMAND wifi_state_test)
+
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME web_network_test COMMAND "${NODE_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/web_network_test.mjs" "${CMAKE_CURRENT_SOURCE_DIR}/../web/index.html")
+endif()

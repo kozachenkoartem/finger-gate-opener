@@ -57,6 +57,9 @@ idf.py -C firmware -p <PORT> monitor
 заменой пароля. Сертификат устройства самоподписанный. Настройка, API и результаты
 проверки описаны в [`docs/https-admin.md`](docs/https-admin.md).
 
+Временный recovery AP и смена Wi-Fi без сброса данных описаны в
+[`docs/network-recovery.md`](docs/network-recovery.md).
+
 ## Датчик отпечатка пальца R558S
 
 R558S — ёмкостный модуль распознавания отпечатков пальцев со встроенной
