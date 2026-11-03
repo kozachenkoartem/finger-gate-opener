@@ -15,8 +15,6 @@ namespace {
 
 constexpr char kLogTag[] = "board_check";
 constexpr int kTouchOutGpio = 3;
-constexpr int kLedGpio = 8;
-constexpr TickType_t kBlinkDelay = pdMS_TO_TICKS(1000);
 
 const char* chip_model_name(esp_chip_model_t model)
 {
@@ -113,34 +111,19 @@ extern "C" void app_main()
         ESP_LOGE(kLogTag, "NVS initialization failed; provisioning is disabled");
         return;
     }
-    static fg::FingerprintTask fingerprint_task;
+    static fg::FingerprintTask fingerprint_task(storage);
     fingerprint_task.start();
     static fg::Provisioning provisioning(storage, fingerprint_task);
     const esp_err_t network_result = provisioning.start();
     if (network_result == ESP_OK) {
-        static fg::AdminServer admin(storage, provisioning);
+        static fg::AdminServer admin(storage, provisioning, fingerprint_task);
         admin.start();
     } else {
         ESP_LOGE(kLogTag, "Networking unavailable: %s", esp_err_to_name(network_result));
     }
 
-    gpio_config_t gpio_configuration = {};
-    gpio_configuration.pin_bit_mask = 1ULL << kLedGpio;
-    gpio_configuration.mode = GPIO_MODE_OUTPUT;
-    ESP_ERROR_CHECK(gpio_config(&gpio_configuration));
-
-    TickType_t last_blink = xTaskGetTickCount();
-    bool led_is_on = false;
-
     while (true) {
         if (network_result == ESP_OK) provisioning.poll();
-        const TickType_t now = xTaskGetTickCount();
-        if (now - last_blink >= kBlinkDelay) {
-            led_is_on = !led_is_on;
-            ESP_ERROR_CHECK(gpio_set_level(static_cast<gpio_num_t>(kLedGpio), led_is_on));
-            last_blink = now;
-        }
-
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

@@ -8,8 +8,8 @@
 namespace fg {
 class AdminServer {
 public:
-    AdminServer(KeyValueStore& storage, Provisioning& provisioning)
-        : storage_(storage), provisioning_(provisioning), auth_(storage) {}
+    AdminServer(KeyValueStore& storage, Provisioning& provisioning, FingerprintTask& fingerprints)
+        : storage_(storage), provisioning_(provisioning), fingerprints_(fingerprints), auth_(storage) {}
     void start();
 
 private:
@@ -19,6 +19,7 @@ private:
     esp_err_t initialize();
     KeyValueStore& storage_;
     Provisioning& provisioning_;
+    FingerprintTask& fingerprints_;
     AuthService auth_;
     TlsIdentity identity_;
     httpd_handle_t server_ = nullptr;

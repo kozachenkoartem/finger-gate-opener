@@ -8,6 +8,23 @@ constexpr uint64_t kApPulseIntervalMs = 2000;
 
 }
 
+void IndicatorScheduler::set_enrollment(bool active)
+{
+    if (active == enrollment_active_) return;
+    enrollment_active_ = active;
+    pattern_active_ = false;
+    start_pattern_ = false;
+    state_changed_ = true;
+}
+
+void IndicatorScheduler::show_result(bool success, uint64_t now_ms)
+{
+    if (enrollment_active_) return;
+    start_pattern_ = false;
+    state_changed_ = false;
+    start_pattern(success ? IndicatorColor::Green : IndicatorColor::Red, now_ms);
+}
+
 void IndicatorScheduler::set_provisioning(ProvisioningIndicatorState state)
 {
     if (state != state_) {
@@ -21,6 +38,13 @@ void IndicatorScheduler::set_provisioning(ProvisioningIndicatorState state)
 
 IndicatorColor IndicatorScheduler::update(uint64_t now_ms)
 {
+    if (enrollment_active_) {
+        state_changed_ = false;
+        start_pattern_ = false;
+        pattern_active_ = false;
+        color_ = IndicatorColor::Yellow;
+        return color_;
+    }
     if (state_changed_) {
         state_changed_ = false;
         if (start_pattern_) {

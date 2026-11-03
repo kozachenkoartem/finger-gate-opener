@@ -5,6 +5,35 @@
 #include "cJSON.h"
 
 namespace fg {
+std::string json_quote(const std::string& value)
+{
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string result = "\"";
+    for (const unsigned char c : value) {
+        if (c == '"' || c == '\\') { result += '\\'; result += static_cast<char>(c); }
+        else if (c < 0x20) {
+            result += "\\u00";
+            result += kHex[c >> 4];
+            result += kHex[c & 15];
+        } else result += static_cast<char>(c);
+    }
+    return result + "\"";
+}
+
+bool parse_unsigned(const std::string& value, uint32_t maximum, uint32_t* output)
+{
+    if (value.empty()) return false;
+    uint32_t number = 0;
+    for (const char c : value) {
+        if (c < '0' || c > '9') return false;
+        const uint32_t digit = c - '0';
+        if (digit > maximum || number > (maximum - digit) / 10) return false;
+        number = number * 10 + digit;
+    }
+    *output = number;
+    return true;
+}
+
 namespace {
 bool flat_object(const std::string& body)
 {

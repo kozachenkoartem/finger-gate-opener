@@ -23,6 +23,8 @@ struct ProvisioningIndicatorState {
 class IndicatorScheduler {
 public:
     void set_provisioning(ProvisioningIndicatorState state);
+    void set_enrollment(bool active);
+    void show_result(bool success, uint64_t now_ms);
     IndicatorColor update(uint64_t now_ms);
 
 private:
@@ -38,6 +40,7 @@ private:
     bool state_changed_ = true;
     bool start_pattern_ = false;
     bool pattern_active_ = false;
+    bool enrollment_active_ = false;
 };
 
 }

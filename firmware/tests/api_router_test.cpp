@@ -15,6 +15,13 @@ void require(bool condition, const char* message)
 
 int main()
 {
+    uint32_t number = 0;
+    require(fg::parse_unsigned("99", 99, &number) && number == 99, "largest valid slot accepted");
+    for (const auto* value : {"", "100", "-1", "+1", "1x", " 1", "999999999999999999999"})
+        require(!fg::parse_unsigned(value, 99, &number), "malformed/out of range slots rejected");
+    require(fg::parse_unsigned("4294967295", UINT32_MAX, &number) && number == UINT32_MAX, "local operation IDs accepted");
+    require(!fg::parse_unsigned("4294967296", UINT32_MAX, &number), "operation ID overflow rejected");
+    require(fg::json_quote("name\"\\\n\t") == "\"name\\\"\\\\\\u000a\\u0009\"", "user names quoted without JSON injection");
     std::map<std::string, std::string> fields;
     const std::vector<std::string> allowed{"username", "password"};
     require(fg::parse_admin_json("application/json", R"({"username":"admin","password":"hello\"world"})", allowed, &fields), "JSON escaped passwords accepted");

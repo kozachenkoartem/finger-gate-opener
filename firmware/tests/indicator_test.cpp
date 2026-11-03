@@ -67,6 +67,16 @@ void test_connection_failure_flashes_three_times_then_returns_to_idle()
 
 int main()
 {
+    fg::IndicatorScheduler enrollment;
+    enrollment.set_provisioning({fg::ProvisioningIndication::Connected, false});
+    enrollment.update(0);
+    enrollment.set_enrollment(true);
+    require(enrollment.update(1) == fg::IndicatorColor::Yellow, "enrollment overrides connection flashes");
+    require(enrollment.update(2000) == fg::IndicatorColor::Yellow, "enrollment stays yellow without blocking scans");
+    enrollment.set_enrollment(false);
+    enrollment.show_result(true, 2001);
+    require(enrollment.update(2001) == fg::IndicatorColor::Green, "successful enrollment starts green flashes");
+    require(enrollment.update(3201) == fg::IndicatorColor::Blue, "successful enrollment returns to idle");
     test_access_point_pulses_blue_every_two_seconds();
     test_connecting_overrides_access_point_pulse();
     test_connection_success_flashes_three_times_then_returns_to_idle();

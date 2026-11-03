@@ -84,7 +84,7 @@ esp_err_t AdminServer::initialize()
 {
     if (auth_.initialize() != AuthResult::Ok || !identity_.initialize(storage_, provisioning_.hostname())) return ESP_FAIL;
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-    config.httpd.max_uri_handlers = 12;
+    config.httpd.max_uri_handlers = 16;
     config.httpd.max_open_sockets = 3;
     config.httpd.max_resp_headers = 12;
     config.httpd.stack_size = 12288;
@@ -97,7 +97,10 @@ esp_err_t AdminServer::initialize()
     struct Route { const char* uri; httpd_method_t method; };
     for (const Route route : {Route{"/", HTTP_GET}, {"/api/login", HTTP_POST}, {"/api/session", HTTP_GET},
                             {"/api/password", HTTP_POST}, {"/api/logout", HTTP_POST}, {"/api/status", HTTP_GET},
-                            {"/api/wifi", HTTP_POST}, {"/api/acknowledge", HTTP_POST}}) {
+                            {"/api/wifi", HTTP_POST}, {"/api/acknowledge", HTTP_POST},
+                            {"/api/fingerprints", HTTP_GET}, {"/api/enrollment/start", HTTP_POST},
+                            {"/api/enrollment/cancel", HTTP_POST}, {"/api/users/rename", HTTP_POST},
+                            {"/api/users/role", HTTP_POST}, {"/api/users/delete", HTTP_POST}}) {
         const httpd_uri_t uri = {.uri = route.uri, .method = route.method, .handler = handler, .user_ctx = this};
         const esp_err_t result = httpd_register_uri_handler(server_, &uri);
         if (result != ESP_OK) { httpd_ssl_stop(server_); server_ = nullptr; return result; }
@@ -163,6 +166,11 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         if (path == "/api/login") allowed = {"username", "password"};
         if (path == "/api/password") allowed = {"new_password"};
         if (path == "/api/wifi") allowed = {"ssid", "password"};
+        if (path == "/api/enrollment/start") allowed = {"name"};
+        if (path == "/api/enrollment/cancel") allowed = {"operation_id"};
+        if (path == "/api/users/rename") allowed = {"slot", "name"};
+        if (path == "/api/users/role") allowed = {"slot", "role"};
+        if (path == "/api/users/delete") allowed = {"slot"};
         if (!parse_admin_json(header(request, "Content-Type"), body, allowed, &fields)) {
             return json_response(request, "400 Bad Request", "{\"error\":\"Expected a JSON object with known string fields\"}");
         }
@@ -177,6 +185,40 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     }
     if (path == "/api/session") return json_response(request, "200 OK", session_json(session));
     if (path == "/api/status") return json_response(request, "200 OK", provisioning_.status_json());
+    if (path == "/api/fingerprints") return json_response(request, "200 OK", fingerprints_.snapshot_json());
+    if (path == "/api/enrollment/start" || path == "/api/enrollment/cancel" ||
+        path == "/api/users/rename" || path == "/api/users/role" || path == "/api/users/delete") {
+        FingerprintCommand command{};
+        uint32_t parsed = 0;
+        if (path == "/api/enrollment/start") {
+            command.type = FingerprintCommandType::Enroll;
+            command.name = fields["name"];
+            if (command.name.size() > 64) return json_response(request, "400 Bad Request", "{\"error\":\"Name exceeds 64 bytes\"}");
+        } else if (path == "/api/enrollment/cancel") {
+            command.type = FingerprintCommandType::Cancel;
+            if (!parse_unsigned(fields["operation_id"], UINT32_MAX, &parsed) || !parsed)
+                return json_response(request, "400 Bad Request", "{\"error\":\"Invalid enrollment operation ID\"}");
+            command.operation_id = parsed;
+        } else {
+            if (!parse_unsigned(fields["slot"], UserRegistry::kSlotCount - 1, &parsed))
+                return json_response(request, "400 Bad Request", "{\"error\":\"Invalid slot\"}");
+            command.slot = parsed;
+            if (path == "/api/users/rename") {
+                command.type = FingerprintCommandType::Rename;
+                command.name = fields["name"];
+                if (command.name.empty() || command.name.size() > 64)
+                    return json_response(request, "400 Bad Request", "{\"error\":\"Name must be 1 to 64 bytes\"}");
+            } else if (path == "/api/users/role") {
+                command.type = FingerprintCommandType::SetRole;
+                if (fields["role"] != "User" && fields["role"] != "Master")
+                    return json_response(request, "400 Bad Request", "{\"error\":\"Role must be User or Master\"}");
+                command.role = fields["role"] == "Master" ? Role::Master : Role::User;
+            } else command.type = FingerprintCommandType::Delete;
+        }
+        const uint32_t id = fingerprints_.submit(command);
+        if (!id) return json_response(request, "503 Service Unavailable", "{\"error\":\"Fingerprint command queue is full or unavailable\"}");
+        return json_response(request, "202 Accepted", "{\"command_id\":" + std::to_string(id) + "}");
+    }
     if (path == "/api/password") {
         const AuthResult result = auth_.change_password(token, csrf, fields["new_password"], now_ms());
         ESP_LOGI(kLogTag, "Audit: password replacement result %d", static_cast<int>(result));

@@ -89,3 +89,14 @@ target_link_libraries(auth_test PRIVATE OpenSSL::Crypto)
 target_link_options(auth_test PRIVATE "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=PKCS5_PBKDF2_HMAC")
 
 add_test(NAME auth_test COMMAND auth_test)
+
+add_executable(fingerprint_controller_test
+    fingerprint_controller_test.cpp
+    ../main/fingerprint_controller.cpp
+    ../main/user_store.cpp
+    ../main/finger_gate_model.cpp)
+
+target_compile_features(fingerprint_controller_test PRIVATE cxx_std_17)
+target_include_directories(fingerprint_controller_test PRIVATE ../main)
+
+add_test(NAME fingerprint_controller_test COMMAND fingerprint_controller_test)

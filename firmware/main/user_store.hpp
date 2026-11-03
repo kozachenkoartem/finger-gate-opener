@@ -32,6 +32,10 @@ private:
 struct StoreSnapshot {
     UserRegistry registry;
     std::bitset<UserRegistry::kSlotCount> quarantined;
+    std::bitset<UserRegistry::kSlotCount> metadata;
+    std::bitset<UserRegistry::kSlotCount> pending_add;
+    std::bitset<UserRegistry::kSlotCount> pending_delete;
+    std::bitset<UserRegistry::kSlotCount> pending_update;
 };
 
 class UserStore {
@@ -41,6 +45,10 @@ public:
     StoreResult commit(uint16_t slot);
     StoreResult stage_delete(uint16_t slot);
     StoreResult commit_delete(uint16_t slot);
+    StoreResult update(const User& user);
+    // Ok означает подтверждённый постоянный запрет; шаблон и запись uN не меняются.
+    // При Failed разрушительный откат запрещён: committed мог сохраниться без uiN.
+    StoreResult quarantine(uint16_t slot);
     StoreSnapshot load() const;
 
 private:

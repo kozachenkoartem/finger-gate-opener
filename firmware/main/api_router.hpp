@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -11,4 +12,6 @@ constexpr char kSessionCookie[] = "__Host-fg_session";
 bool parse_admin_json(const std::string& content_type, const std::string& body,
                       const std::vector<std::string>& allowed_fields, std::map<std::string, std::string>* fields);
 std::string session_cookie_token(const std::string& cookies);
+std::string json_quote(const std::string& value);
+bool parse_unsigned(const std::string& value, uint32_t maximum, uint32_t* output);
 }
