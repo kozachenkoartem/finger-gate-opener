@@ -17,6 +17,9 @@ constexpr uint8_t kInstructionCreateModel = 0x05;
 constexpr uint8_t kInstructionStoreModel = 0x06;
 constexpr uint8_t kInstructionSearch = 0x04;
 constexpr uint8_t kInstructionDeleteModel = 0x0C;
+constexpr uint8_t kInstructionEmptyDatabase = 0x0D;
+constexpr uint8_t kInstructionTemplateCount = 0x1D;
+constexpr uint8_t kInstructionReadIndexTable = 0x1F;
 constexpr uint8_t kInstructionSetLed = 0x3C;
 
 std::vector<uint8_t> uint16_parameters(uint16_t value)
@@ -60,6 +63,16 @@ TransactionResult Driver::get_image(uint32_t timeout_ms)
     return transact(kInstructionGetImage, {}, 0, timeout_ms);
 }
 
+TransactionResult Driver::template_count(uint32_t timeout_ms)
+{
+    return transact(kInstructionTemplateCount, {}, 2, timeout_ms);
+}
+
+TransactionResult Driver::read_index_page(uint8_t page, uint32_t timeout_ms)
+{
+    return transact(kInstructionReadIndexTable, {page}, 32, timeout_ms);
+}
+
 TransactionResult Driver::image_to_template(uint8_t buffer_id, uint32_t timeout_ms)
 {
     return transact(kInstructionImageToTemplate, {buffer_id}, 0, timeout_ms);
@@ -91,6 +104,11 @@ TransactionResult Driver::delete_model(uint16_t slot, uint32_t timeout_ms)
 {
     const auto slot_bytes = uint16_parameters(slot);
     return transact(kInstructionDeleteModel, {slot_bytes[0], slot_bytes[1], 0x00, 0x01}, 0, timeout_ms);
+}
+
+TransactionResult Driver::empty_database(uint32_t timeout_ms)
+{
+    return transact(kInstructionEmptyDatabase, {}, 0, timeout_ms);
 }
 
 TransactionResult Driver::transact(uint8_t instruction, const std::vector<uint8_t>& parameters,

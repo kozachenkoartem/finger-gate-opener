@@ -108,6 +108,29 @@ void set_r558s_backlight(r558s::LedColor color)
     }
 }
 
+void log_r558s_database()
+{
+    const r558s::TransactionResult count = g_r558s.template_count();
+    if (count.status != r558s::TransactionStatus::Success || count.data.size() != 2) {
+        ESP_LOGE(kLogTag, "R558S template count query failed (%d, confirmation 0x%02X)",
+                 static_cast<int>(count.status), count.confirmation_code);
+        return;
+    }
+
+    const uint16_t template_count = (static_cast<uint16_t>(count.data[0]) << 8) | count.data[1];
+    ESP_LOGI(kLogTag, "R558S reports %u stored template(s)", template_count);
+
+    const r558s::TransactionResult index = g_r558s.read_index_page(0);
+    if (index.status != r558s::TransactionStatus::Success) {
+        ESP_LOGE(kLogTag, "R558S index page query failed (%d, confirmation 0x%02X)",
+                 static_cast<int>(index.status), index.confirmation_code);
+        return;
+    }
+
+    ESP_LOGI(kLogTag, "R558S index page 0 (%u byte(s))", static_cast<unsigned>(index.data.size()));
+    ESP_LOG_BUFFER_HEX_LEVEL(kLogTag, index.data.data(), index.data.size(), ESP_LOG_INFO);
+}
+
 }
 
 extern "C" void app_main()
@@ -125,6 +148,7 @@ extern "C" void app_main()
     configure_touch_out();
     g_r558s.initialize();
     set_r558s_backlight(r558s::LedColor::Red);
+    log_r558s_database();
 
     gpio_config_t gpio_configuration = {};
     gpio_configuration.pin_bit_mask = 1ULL << kLedGpio;
