@@ -32,3 +32,12 @@ target_compile_features(user_store_test PRIVATE cxx_std_17)
 target_include_directories(user_store_test PRIVATE ../main)
 
 add_test(NAME user_store_test COMMAND user_store_test)
+
+add_executable(provisioning_state_test
+    provisioning_state_test.cpp
+    ../main/provisioning_state.cpp)
+
+target_compile_features(provisioning_state_test PRIVATE cxx_std_17)
+target_include_directories(provisioning_state_test PRIVATE ../main)
+
+add_test(NAME provisioning_state_test COMMAND provisioning_state_test)
