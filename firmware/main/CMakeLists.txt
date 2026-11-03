@@ -1,4 +1,5 @@
 idf_component_register(SRCS "main.cpp"
+                             "finger_gate_model.cpp"
                              "r558s_driver.cpp"
                              "r558s_protocol.cpp"
                        INCLUDE_DIRS "."
