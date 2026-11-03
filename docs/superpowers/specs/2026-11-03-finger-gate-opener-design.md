@@ -31,7 +31,7 @@ Finger Gate Opener is a local fingerprint-controlled gate relay for an ESP32-C3 
 
 - A dedicated fingerprint task owns the driver and executes every sensor request received through an internal command queue.
 - Touch events are debounced in that task. A successful identification is looked up in the local metadata store. Only users whose role has access may request a relay pulse.
-- A 10-second cooldown starts when a relay pulse begins. No additional pulse may begin during the cooldown and new matches do not extend it. Relay pulse duration is a separate persisted setting, initially 500 ms.
+- A 10-second cooldown starts when a relay pulse begins. No additional pulse may begin during the cooldown and new matches do not extend it. Relay pulse duration is a separate persisted setting, initially 1,000 ms.
 - Master and User are the only fingerprint roles. Both may open the gate; Master may additionally begin a local enrollment gesture. At most two active fingerprints may have the Master role, and this limit is enforced by business logic and the REST API.
 - The master gesture is exactly three distinct successful matches of the same active Master template within a fixed 10-second window. The finger must be removed between matches. A different finger resets the sequence. It opens one local enrollment operation only; it does not expose credentials or change Wi-Fi configuration.
 - Every recognition, rejection, enrollment result, deletion, relay decision, and security-relevant administration result creates an audit record when flash storage is available. Each record has a monotonic sequence number, event type, applicable fingerprint ID and captured name, operation result, and either a UTC timestamp or a boot ID plus elapsed boot time. Rate-limit repeated equivalent events to reduce flash wear.
@@ -91,5 +91,5 @@ Finger Gate Opener is a local fingerprint-controlled gate relay for an ESP32-C3 
 
 ## Builder Decisions
 
-- GPIO10 remains high impedance until the relay hardware stage. Earlier stages use a stand-in actuator that logs requested gate pulses and never configures GPIO10. The relay stage must guarantee no pulse during boot, reset, or error recovery.
+- GPIO10 remains high impedance until the relay hardware stage. Earlier stages use GPIO8 as a 1,000 ms stand-in lock actuator and never configure GPIO10. The relay stage must guarantee no pulse during boot, reset, or error recovery.
 - The exact NVS key names, audit record binary layout, password KDF parameters, embedded UI visual style, API URL spelling, TLS certificate generation flow, and OTA image-signing mechanism are implementation decisions. They must meet the stated security and resilience constraints and be documented next to the implementation.

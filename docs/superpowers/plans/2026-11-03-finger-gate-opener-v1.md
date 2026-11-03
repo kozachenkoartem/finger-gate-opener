@@ -20,7 +20,7 @@
 - Sensitive operations are denied until the initial `admin` password is changed.
 - Password verifiers use a unique salt and a deliberately slow resource-appropriate KDF; plaintext passwords and secrets never enter logs or API responses.
 - If NVS configuration/credential initialization, read, or entropy validation fails, administration fails closed without resetting credentials or erasing NVS. Report the degraded state locally while preserving unaffected safe fingerprint access.
-- Relay duration defaults to 500 ms, is validated and persisted separately from the fixed cooldown, and takes effect only for the next accepted pulse.
+- Relay duration defaults to 1,000 ms, is validated and persisted separately from the fixed cooldown, and takes effect only for the next accepted pulse.
 - Local recognition and access decisions continue with Wi-Fi, HTTP, TLS, NTP, or Home Assistant unavailable.
 - The audit log retains 512 events, recovers incomplete writes, and throttles repeated equivalent events.
 - Incomplete add/delete records quarantine their slot from access and new allocation until the fingerprint task reconciles R558S state at boot. Store intent before a sensor mutation; after an uncertain acknowledgement, never retry blindly.
@@ -115,7 +115,7 @@
 - Produces `fg::AccessController::on_match(slot, pulse_started_at_ms)`, `fg::GateActuator::request_pulse(duration_ms)`, and a dedicated `fg::FingerprintTask` command queue.
 
 - [ ] Add failing host tests for active User/Master unlock, unknown or inactive slot denial, exact 10-second cooldown, and repeated held-finger suppression.
-- [ ] Implement access decisions and the logging `GateActuator`; do not configure GPIO10. Start cooldown only when the actuator accepts and timestamps a pulse request.
+- [ ] Implement access decisions and the GPIO8 stand-in `GateActuator` with a 1,000 ms pulse; do not configure GPIO10. Start cooldown only when the actuator accepts and timestamps a pulse request.
 - [ ] Implement a fingerprint task that is the only reader/mutator of the registry and store. Web commands are serialized through a bounded queue and return immutable snapshots; storage work never holds a lock needed for recognition.
 - [ ] At boot, make the fingerprint task load and reconcile quarantined slots before it accepts recognition, enrollment, or administrative mutations.
 - [ ] Run host tests and ESP-IDF build. With the sensor connected, verify recognition and stand-in gate logs; record the physical result separately.
