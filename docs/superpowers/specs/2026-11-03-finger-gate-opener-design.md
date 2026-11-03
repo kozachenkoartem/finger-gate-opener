@@ -39,6 +39,7 @@ Finger Gate Opener is a local fingerprint-controlled gate relay for an ESP32-C3 
 ## LED Behavior
 
 - Idle: blue.
+- Provisioning AP active: one blue ring pulse every two seconds.
 - Enrollment active: yellow.
 - Success: three green flashes, then blue.
 - Failure or rejection: three red flashes, then blue.

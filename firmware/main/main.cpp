@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 
 #include "r558s_driver.hpp"
+#include "provisioning.hpp"
 
 namespace {
 
@@ -146,6 +147,8 @@ extern "C" void app_main()
     ESP_LOGI(kLogTag, "Free heap: %lu bytes", static_cast<unsigned long>(esp_get_free_heap_size()));
 
     configure_touch_out();
+    static fg::Provisioning provisioning;
+    ESP_ERROR_CHECK(provisioning.start());
     g_r558s.initialize();
     set_r558s_backlight(r558s::LedColor::Red);
     log_r558s_database();
