@@ -51,6 +51,13 @@ idf.py -C firmware -p <PORT> monitor
 реагирует, уточните его GPIO для конкретной ревизии платы перед изменением `kLedGpio` в
 [`firmware/main/main.cpp`](firmware/main/main.cpp).
 
+### HTTPS-администрирование
+
+После подключения к Wi-Fi откройте `https://finger-gate-XXXX.local/` либо
+`https://<IP-платы>/`. Начальные credentials — `admin` / `admin`, с обязательной
+заменой пароля. Сертификат устройства самоподписанный. Настройка, API и результаты
+проверки описаны в [`docs/https-admin.md`](docs/https-admin.md).
+
 ## Датчик отпечатка пальца R558S
 
 R558S — ёмкостный модуль распознавания отпечатков пальцев со встроенной
