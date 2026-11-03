@@ -3,27 +3,20 @@
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "r558s_driver.hpp"
+#include "fingerprint_task.hpp"
 #include "provisioning.hpp"
+#include "nvs_storage.hpp"
+#include "http_server.hpp"
 
 namespace {
 
 constexpr char kLogTag[] = "board_check";
 constexpr int kTouchOutGpio = 3;
 constexpr int kLedGpio = 8;
-constexpr uart_port_t kR558sUart = UART_NUM_1;
-constexpr int kR558sRxGpio = 4;
-constexpr int kR558sTxGpio = 5;
-constexpr int kR558sBaudRate = 57600;
-constexpr int64_t kTouchIndicationDurationUs = 1000000;
-constexpr TickType_t kTouchPollDelay = pdMS_TO_TICKS(10);
 constexpr TickType_t kBlinkDelay = pdMS_TO_TICKS(1000);
-
-r558s::Driver g_r558s(kR558sUart, kR558sTxGpio, kR558sRxGpio, kR558sBaudRate);
 
 const char* chip_model_name(esp_chip_model_t model)
 {
@@ -100,38 +93,6 @@ void configure_touch_out()
     ESP_ERROR_CHECK(gpio_config(&configuration));
 }
 
-void set_r558s_backlight(r558s::LedColor color)
-{
-    const r558s::TransactionResult result = g_r558s.set_led(color);
-    if (result.status != r558s::TransactionStatus::Success) {
-        ESP_LOGE(kLogTag, "R558S LED command failed (%d, confirmation 0x%02X)",
-                 static_cast<int>(result.status), result.confirmation_code);
-    }
-}
-
-void log_r558s_database()
-{
-    const r558s::TransactionResult count = g_r558s.template_count();
-    if (count.status != r558s::TransactionStatus::Success || count.data.size() != 2) {
-        ESP_LOGE(kLogTag, "R558S template count query failed (%d, confirmation 0x%02X)",
-                 static_cast<int>(count.status), count.confirmation_code);
-        return;
-    }
-
-    const uint16_t template_count = (static_cast<uint16_t>(count.data[0]) << 8) | count.data[1];
-    ESP_LOGI(kLogTag, "R558S reports %u stored template(s)", template_count);
-
-    const r558s::TransactionResult index = g_r558s.read_index_page(0);
-    if (index.status != r558s::TransactionStatus::Success) {
-        ESP_LOGE(kLogTag, "R558S index page query failed (%d, confirmation 0x%02X)",
-                 static_cast<int>(index.status), index.confirmation_code);
-        return;
-    }
-
-    ESP_LOGI(kLogTag, "R558S index page 0 (%u byte(s))", static_cast<unsigned>(index.data.size()));
-    ESP_LOG_BUFFER_HEX_LEVEL(kLogTag, index.data.data(), index.data.size(), ESP_LOG_INFO);
-}
-
 }
 
 extern "C" void app_main()
@@ -147,36 +108,32 @@ extern "C" void app_main()
     ESP_LOGI(kLogTag, "Free heap: %lu bytes", static_cast<unsigned long>(esp_get_free_heap_size()));
 
     configure_touch_out();
-    static fg::Provisioning provisioning;
-    ESP_ERROR_CHECK(provisioning.start());
-    g_r558s.initialize();
-    set_r558s_backlight(r558s::LedColor::Red);
-    log_r558s_database();
+    static fg::NvsKeyValueStore storage;
+    if (storage.initialize() != fg::StoreResult::Ok) {
+        ESP_LOGE(kLogTag, "NVS initialization failed; provisioning is disabled");
+        return;
+    }
+    static fg::FingerprintTask fingerprint_task;
+    fingerprint_task.start();
+    static fg::Provisioning provisioning(storage, fingerprint_task);
+    const esp_err_t network_result = provisioning.start();
+    if (network_result == ESP_OK) {
+        static fg::AdminServer admin(storage, provisioning);
+        admin.start();
+    } else {
+        ESP_LOGE(kLogTag, "Networking unavailable: %s", esp_err_to_name(network_result));
+    }
 
     gpio_config_t gpio_configuration = {};
     gpio_configuration.pin_bit_mask = 1ULL << kLedGpio;
     gpio_configuration.mode = GPIO_MODE_OUTPUT;
     ESP_ERROR_CHECK(gpio_config(&gpio_configuration));
 
-    bool touch_was_active = gpio_get_level(static_cast<gpio_num_t>(kTouchOutGpio));
-    int64_t green_until = 0;
     TickType_t last_blink = xTaskGetTickCount();
     bool led_is_on = false;
 
     while (true) {
-        const bool touch_is_active = gpio_get_level(static_cast<gpio_num_t>(kTouchOutGpio));
-        if (touch_is_active && !touch_was_active) {
-            ESP_LOGI(kLogTag, "R558S touch detected");
-            set_r558s_backlight(r558s::LedColor::Green);
-            green_until = esp_timer_get_time() + kTouchIndicationDurationUs;
-        }
-        touch_was_active = touch_is_active;
-
-        if (green_until != 0 && esp_timer_get_time() >= green_until) {
-            set_r558s_backlight(r558s::LedColor::Red);
-            green_until = 0;
-        }
-
+        if (network_result == ESP_OK) provisioning.poll();
         const TickType_t now = xTaskGetTickCount();
         if (now - last_blink >= kBlinkDelay) {
             led_is_on = !led_is_on;
@@ -184,6 +141,6 @@ extern "C" void app_main()
             last_blink = now;
         }
 
-        vTaskDelay(kTouchPollDelay);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

@@ -28,6 +28,8 @@ public:
     void connected(const std::string& station_ip);
     void failed(const std::string& reason);
     std::string json() const;
+    const std::string& hostname() const { return hostname_; }
+    bool is_connected() const { return phase_ == Phase::Connected; }
 
 private:
     enum class Phase { ApReady, Connecting, Connected, Failed };

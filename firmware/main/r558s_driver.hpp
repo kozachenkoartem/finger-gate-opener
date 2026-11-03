@@ -9,6 +9,7 @@
 namespace r558s {
 
 enum class LedColor : uint8_t {
+    Off = 0x00,
     Blue = 0x01,
     Green = 0x02,
     Red = 0x04,

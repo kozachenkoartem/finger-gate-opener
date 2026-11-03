@@ -29,8 +29,10 @@ void test_state_json_reports_connection_progress()
     require(state.json() ==
                 "{\"state\":\"connected\",\"message\":\"Connected to the local network\",\"sta_ip\":\"10.0.0.24\",\"ap_ip\":\"192.168.4.1\",\"hostname\":\"finger-gate-a31d\"}",
             "connected state must expose the assigned station address");
+    require(state.is_connected(), "connected state must stop provisioning-only behavior");
 
     state.failed("Connection failed. Check Wi-Fi name and password.");
+    require(!state.is_connected(), "failed state must not be considered connected");
     require(state.json().find("\"state\":\"failed\"") != std::string::npos,
             "connection failure must be observable");
 }
