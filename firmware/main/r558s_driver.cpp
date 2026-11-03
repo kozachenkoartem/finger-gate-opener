@@ -2,6 +2,7 @@
 
 #include "driver/uart.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include "r558s_protocol.hpp"
@@ -21,6 +22,7 @@ constexpr uint8_t kInstructionEmptyDatabase = 0x0D;
 constexpr uint8_t kInstructionTemplateCount = 0x1D;
 constexpr uint8_t kInstructionReadIndexTable = 0x1F;
 constexpr uint8_t kInstructionSetLed = 0x3C;
+constexpr size_t kSearchDataSize = 4;
 
 std::vector<uint8_t> uint16_parameters(uint16_t value)
 {
@@ -86,7 +88,7 @@ TransactionResult Driver::search_template(uint8_t buffer_id, uint16_t start_slot
     const auto count = uint16_parameters(slot_count);
     parameters.insert(parameters.end(), start.begin(), start.end());
     parameters.insert(parameters.end(), count.begin(), count.end());
-    return transact(kInstructionSearch, parameters, 4, timeout_ms);
+    return transact(kInstructionSearch, parameters, kSearchDataSize, timeout_ms);
 }
 
 TransactionResult Driver::create_model(uint32_t timeout_ms)
@@ -151,8 +153,13 @@ TransactionResult Driver::transact(uint8_t instruction, const std::vector<uint8_
             return result;
         }
 
-        const AckResult acknowledgement = decode_ack(*packet, expected_success_data_size);
+        // Search сохраняет поля ID/score и при отрицательном ответе 0x09.
+        const size_t allowed_rejection_data_size = instruction == kInstructionSearch ? kSearchDataSize : 0;
+        const AckResult acknowledgement = decode_ack(*packet, expected_success_data_size, allowed_rejection_data_size);
         if (acknowledgement == AckResult::InvalidPacket) {
+            ESP_LOGW("r558s", "Invalid ACK: instruction=0x%02X confirmation=0x%02X payload=%u expected_success=%u",
+                     instruction, packet->payload.empty() ? 0xff : packet->payload.front(),
+                     static_cast<unsigned>(packet->payload.size()), static_cast<unsigned>(expected_success_data_size));
             result.status = TransactionStatus::InvalidResponse;
             return result;
         }

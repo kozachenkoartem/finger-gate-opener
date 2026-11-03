@@ -110,6 +110,33 @@ void test_ack_result_distinguishes_sensor_rejection()
             "successful response with unexpected payload must be rejected");
 }
 
+void test_search_rejection_with_unused_id_and_score_fields()
+{
+    r558s::Packet not_found;
+    not_found.address = 0xFFFFFFFF;
+    not_found.type = r558s::kPacketTypeAck;
+    not_found.payload = {0x09, 0x00, 0x00, 0x00, 0x00};
+    require(r558s::decode_ack(not_found, 4, 4) == r558s::AckResult::SensorRejected,
+            "R558S search not-found ACK with four unused data bytes is a sensor rejection, not a malformed reply");
+    require(r558s::decode_ack(not_found, 4) == r558s::AckResult::InvalidPacket,
+            "extended rejection fields require an explicit command contract");
+    not_found.payload = {0x09};
+    require(r558s::decode_ack(not_found, 4, 4) == r558s::AckResult::SensorRejected,
+            "short search not-found ACK remains supported");
+    for (const auto& invalid : {bytes({0x09, 0x00}), bytes({0x09, 0x00, 0x00}),
+                                bytes({0x09, 0x00, 0x00, 0x00}), bytes({0x09, 0, 0, 0, 0, 0})}) {
+        not_found.payload = invalid;
+        require(r558s::decode_ack(not_found, 4, 4) == r558s::AckResult::InvalidPacket,
+                "unexpected rejection payload lengths remain invalid");
+    }
+    not_found.payload = {0x0B, 0, 0, 0, 0};
+    require(r558s::decode_ack(not_found, 4, 4) == r558s::AckResult::SensorRejected,
+            "other search failures remain failures and are never successes");
+    not_found.payload = {0x00};
+    require(r558s::decode_ack(not_found, 4, 4) == r558s::AckResult::InvalidPacket,
+            "success still requires the complete ID and score");
+}
+
 }
 
 int main()
@@ -120,5 +147,6 @@ int main()
     test_parser_rejects_invalid_checksum();
     test_parser_rejects_invalid_length();
     test_ack_result_distinguishes_sensor_rejection();
+    test_search_rejection_with_unused_id_and_score_fields();
     return EXIT_SUCCESS;
 }

@@ -63,6 +63,11 @@ public:
                 if (response.slot >= UserRegistry::kSlotCount) response.code = SensorCode::Uncertain;
             }
         }
+        if (response.code != SensorCode::Ok && response.code != SensorCode::NotFound) {
+            ESP_LOGW(kLogTag, "Search failed: status=%d confirmation=0x%02X data=%u buffer=%u timeout_ms=%lu",
+                     static_cast<int>(result.status), result.confirmation_code,
+                     static_cast<unsigned>(result.data.size()), buffer, static_cast<unsigned long>(timeout));
+        }
         return response;
     }
     SensorReply index(uint32_t timeout) override

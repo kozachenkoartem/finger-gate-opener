@@ -28,7 +28,7 @@ enum class AckResult {
 };
 
 std::vector<uint8_t> make_command(uint8_t instruction, const std::vector<uint8_t>& parameters);
-AckResult decode_ack(const Packet& packet, size_t expected_success_data_size);
+AckResult decode_ack(const Packet& packet, size_t expected_success_data_size, size_t allowed_rejection_data_size = 0);
 
 class FrameParser {
 public:

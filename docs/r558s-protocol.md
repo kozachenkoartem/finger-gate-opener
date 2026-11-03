@@ -29,3 +29,21 @@ An R558S reply is accepted only after checking:
 | Empty database | `0D` | Successful acknowledgement followed by a zero template count |
 
 The temporary test enrollment used four scans with full finger removal between scans and a 120-second total deadline. It stored and found a test fingerprint in slot 1. The index table first byte changed from `00` to `02`, then returned to `00` after database cleanup.
+
+## Search Rejection ACK Format (2026-11-03)
+
+The device returns Search (`04`) confirmation `09` (no matching fingerprint)
+with a five-byte payload: confirmation plus the four unused ID/score bytes.
+The previous driver required a one-byte rejection payload and consequently
+reported `duplicate_search_failed` on the first enrollment scan.
+
+Search now explicitly accepts either the one-byte or five-byte rejection
+format. Other commands retain the one-byte rejection contract. Nonzero
+confirmations remain failures; only Search confirmation `09` means `NotFound`.
+Success payload length, checksum, address and packet-type validation are unchanged.
+
+The extended response was observed on the actual board; a read-only Search probe
+after the fix returned `NotFound` rather than `InvalidResponse`. Host regression
+tests cover both rejection formats, unexpected lengths and truncated successes.
+The temporary boot probe was removed after verification. Physical four-scan
+enrollment with the corrected driver still requires user acceptance.

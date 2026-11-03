@@ -35,13 +35,14 @@ std::vector<uint8_t> make_command(uint8_t instruction, const std::vector<uint8_t
     return command;
 }
 
-AckResult decode_ack(const Packet& packet, size_t expected_success_data_size)
+AckResult decode_ack(const Packet& packet, size_t expected_success_data_size, size_t allowed_rejection_data_size)
 {
     if (packet.type != kPacketTypeAck || packet.payload.empty()) {
         return AckResult::InvalidPacket;
     }
     if (packet.payload.front() != 0) {
-        return packet.payload.size() == 1 ? AckResult::SensorRejected : AckResult::InvalidPacket;
+        return packet.payload.size() == 1 || packet.payload.size() == allowed_rejection_data_size + 1
+            ? AckResult::SensorRejected : AckResult::InvalidPacket;
     }
     return packet.payload.size() == expected_success_data_size + 1 ? AckResult::Success
                                                                      : AckResult::InvalidPacket;
