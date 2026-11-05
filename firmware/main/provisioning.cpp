@@ -47,9 +47,11 @@ esp_err_t Provisioning::start()
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), kLogTag, "event loop initialization failed");
     ap_netif_ = esp_netif_create_default_wifi_ap();
     if (!ap_netif_ || !esp_netif_create_default_wifi_sta()) return ESP_ERR_NO_MEM;
-    esp_netif_dhcp_status_t dhcp;
-    ESP_RETURN_ON_ERROR(esp_netif_dhcps_get_status(ap_netif_, &dhcp), kLogTag, "DHCP status failed");
-    if (dhcp == ESP_NETIF_DHCP_STARTED) ESP_RETURN_ON_ERROR(esp_netif_dhcps_stop(ap_netif_), kLogTag, "DHCP stop failed");
+    const auto dhcp_stop = esp_netif_dhcps_stop(ap_netif_);
+    if (dhcp_stop != ESP_OK && dhcp_stop != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGE(kLogTag, "DHCP stop failed: %s", esp_err_to_name(dhcp_stop));
+        return dhcp_stop;
+    }
     esp_netif_ip_info_t ip = {};
     IP4_ADDR(&ip.ip, 192, 168, 4, 1);
     IP4_ADDR(&ip.gw, 192, 168, 4, 1);
