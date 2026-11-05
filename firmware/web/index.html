@@ -28,7 +28,9 @@ body{font:16px system-ui;max-width:650px;margin:40px auto;padding:0 20px;backgro
 <form id="enroll"><label>Fingerprint name (optional, up to 64 bytes)<input name="name" maxlength="64" autocomplete="off"></label><button id="enrollStart">Add fingerprint</button></form>
 <pre id="enrollmentStatus" role="status"></pre>
 <button id="cancelEnrollment" hidden>Cancel enrollment</button><button id="fingerprintRefresh">Refresh fingerprints / last access</button>
-<p id="accessStatus"></p><p id="quarantineStatus"></p><div id="users"></div>
+ <p id="accessStatus"></p><p id="quarantineStatus"></p><div id="users"></div>
+ <h2>Audit journal</h2><button id="auditRefresh">Refresh journal</button><button id="auditClear">Clear journal</button><pre id="auditLog"></pre>
+ <h2>Atlas hub token</h2><p>Create or rotate displays a new token once. Store it in Atlas before leaving this page.</p><input id="hubToken" readonly aria-label="New Atlas token"><button id="hubCreate">Create token</button><button id="hubRotate">Rotate token</button><button id="hubRevoke">Revoke token</button>
 </section>
 <button id="logout" hidden>Sign out</button>
 <script>
@@ -36,7 +38,7 @@ const byId=id=>document.getElementById(id);
 let csrf='',pollTimer=0,fingerTimer=0,enrollmentId=0,commandPending=false,usersKey='',networkPending=false,lastNetwork=null,pendingWifiCommand=0;
 const message=text=>{byId('message').textContent=text;};
 async function api(path,data){const options={credentials:'same-origin',headers:{}};if(data!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(data);}const response=await fetch('/api/'+path,options);const value=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Error(value.error||'Request failed');}return value;}
-function showLogin(){clearTimeout(pollTimer);clearTimeout(fingerTimer);csrf='';usersKey='';pendingWifiCommand=0;['passwordSection','adminSection','logout'].forEach(id=>byId(id).hidden=true);byId('loginSection').hidden=false;}
+function showLogin(){clearTimeout(pollTimer);clearTimeout(fingerTimer);csrf='';usersKey='';pendingWifiCommand=0;byId('hubToken').value='';['passwordSection','adminSection','logout'].forEach(id=>byId(id).hidden=true);byId('loginSection').hidden=false;}
 async function showSession(value){csrf=value.csrf;byId('loginSection').hidden=true;byId('logout').hidden=false;byId('passwordSection').hidden=false;byId('adminSection').hidden=value.password_change_required;if(value.password_change_required){message('Replace the default administrator password to continue.');}else{message('Signed in.');await refresh();await refreshFingerprints();}}
 async function refresh(){
  clearTimeout(pollTimer);
@@ -59,6 +61,8 @@ async function refresh(){
  }
  return state;
 }
+async function issueHubToken(){const value=await api('hub/token',{});byId('hubToken').value=value.token;message('New Atlas token shown once. Store it now.');}
+async function refreshAudit(){const value=await api('audit');byId('auditLog').textContent=(value.events||[]).map(event=>event.id+' type '+event.type+' result '+event.result+' slot '+event.slot).join('\n')||'No retained events.';}
 function onForm(id,action){byId(id).onsubmit=async event=>{event.preventDefault();const button=event.target.querySelector('button');button.disabled=true;try{await action(Object.fromEntries(new FormData(event.target)));event.target.reset();}catch(error){message(error.message);}finally{button.disabled=false;}};}
 onForm('login',async data=>showSession(await api('login',data)));
 onForm('password',async data=>{await api('password',data);showLogin();message('Password saved. Sign in with your new password.');});
@@ -136,7 +140,12 @@ async function fingerprintCommand(route,data){
 }
 onForm('enroll',data=>fingerprintCommand('enrollment/start',data));
 byId('cancelEnrollment').onclick=()=>fingerprintCommand('enrollment/cancel',{operation_id:String(enrollmentId)}).catch(e=>message(e.message));
-byId('fingerprintRefresh').onclick=()=>refreshFingerprints().catch(e=>message(e.message));
+ byId('fingerprintRefresh').onclick=()=>refreshFingerprints().catch(e=>message(e.message));
+ byId('hubCreate').onclick=()=>issueHubToken().catch(e=>message(e.message));
+ byId('hubRotate').onclick=()=>issueHubToken().catch(e=>message(e.message));
+ byId('hubRevoke').onclick=async()=>{try{const response=await fetch('/api/hub/token',{method:'DELETE',credentials:'same-origin',headers:{'X-CSRF-Token':csrf}});const value=await response.json();if(!response.ok)throw Error(value.error||'Request failed');byId('hubToken').value='';message('Atlas token revoked.');}catch(e){message(e.message);}};
+ byId('auditRefresh').onclick=()=>refreshAudit().catch(e=>message(e.message));
+ byId('auditClear').onclick=async()=>{try{await api('audit/clear',{});await refreshAudit();message('Audit journal cleared.');}catch(e){message(e.message);}};
 api('session').then(showSession).catch(()=>{showLogin();message('Sign in to administer this device.');});
 </script>
 </html>

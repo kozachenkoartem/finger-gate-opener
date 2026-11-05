@@ -2,6 +2,7 @@
 #include "api_router.hpp"
 
 #include <cstring>
+#include <atomic>
 #include <map>
 #include <string>
 #include "esp_check.h"
@@ -65,7 +66,100 @@ std::string session_json(const Session& session)
         (session.password_change_required ? "true}" : "false}");
 }
 
+bool parse_cursor(const std::string& text, AuditCursor* cursor)
+{
+    if (text.empty()) { *cursor = {}; return true; }
+    const size_t colon = text.find(':');
+    if (colon == 0 || colon == std::string::npos || colon + 1 == text.size() || text.find(':', colon + 1) != std::string::npos) return false;
+    uint64_t values[2]{};
+    size_t part = 0;
+    for (char character : text) {
+        if (character == ':') { ++part; continue; }
+        if (character < '0' || character > '9' || values[part] > (UINT64_MAX - static_cast<uint64_t>(character - '0')) / 10) return false;
+        values[part] = values[part] * 10 + static_cast<uint64_t>(character - '0');
+    }
+    if (values[0] > UINT32_MAX) return false;
+    *cursor = {static_cast<uint32_t>(values[0]), values[1]};
+    return true;
 }
+
+}
+
+class AdminServer::SseSession {
+public:
+    SseSession(AdminServer& owner, httpd_req_t* request, uint32_t generation)
+        : owner_(owner), request_(request), socket_(httpd_req_to_sockfd(request)), generation_(generation), stream_(owner.audit_, 8) {
+        stream_.set_ready_callback([this] { schedule(); });
+    }
+
+    EventStreamResult start(AuditCursor cursor)
+    {
+        const EventStreamResult result = stream_.open(cursor, generation_, &replay_);
+        if (result == EventStreamResult::Ok) schedule();
+        return result;
+    }
+
+    bool closed() const { return completed_.load(); }
+
+    void close()
+    {
+        stream_.close();
+        httpd_sess_trigger_close(owner_.server_, socket_);
+        schedule();
+    }
+
+private:
+    static void worker(void* context)
+    {
+        auto* session = static_cast<SseSession*>(context);
+        session->queued_.store(false);
+        if (session->owner_.hub_auth_.generation() != session->generation_ || session->stream_.closed()) {
+            session->finish();
+            return;
+        }
+        std::string frame;
+        AuditRecord record;
+        if (session->replay_index_ < session->replay_.events.size()) frame = AuditEventStream::sse_frame(session->replay_.events[session->replay_index_++]);
+        else if (session->stream_.take_next(session->generation_, &record)) frame = AuditEventStream::sse_frame(record);
+        else return;
+        if (httpd_resp_send_chunk(session->request_, frame.data(), frame.size()) != ESP_OK) {
+            session->stream_.close();
+            session->finish();
+            return;
+        }
+        if (session->replay_index_ < session->replay_.events.size()) session->schedule();
+    }
+
+    void schedule()
+    {
+        bool expected = false;
+        if (!queued_.compare_exchange_strong(expected, true)) return;
+        if (httpd_queue_work(owner_.server_, worker, this) != ESP_OK) {
+            queued_.store(false);
+            stream_.close();
+            finish();
+        }
+    }
+
+    void finish()
+    {
+        if (completed_.exchange(true)) return;
+        stream_.close();
+        httpd_resp_send_chunk(request_, nullptr, 0);
+        httpd_req_async_handler_complete(request_);
+        httpd_sess_trigger_close(owner_.server_, socket_);
+    }
+
+    AdminServer& owner_;
+    httpd_req_t* request_;
+    int socket_;
+    uint32_t generation_;
+    AuditEventStream stream_;
+    AuditPage replay_;
+    size_t replay_index_ = 0;
+    std::atomic<bool> queued_{false};
+    std::atomic<bool> completed_{false};
+};
 
 void AdminServer::publish(AuditType type, AuditResultCode result)
 {
@@ -95,8 +189,9 @@ esp_err_t AdminServer::initialize()
 {
     if (auth_.initialize() != AuthResult::Ok || !identity_.initialize(storage_, provisioning_.hostname())) return ESP_FAIL;
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-    config.httpd.max_uri_handlers = 22;
-    config.httpd.max_open_sockets = 3;
+    config.httpd.max_uri_handlers = 25;
+    config.httpd.max_open_sockets = 4;
+    config.httpd.send_wait_timeout = 1;
     config.httpd.max_resp_headers = 12;
     config.httpd.stack_size = 12288;
     config.tls_handshake_timeout_ms = 5000;
@@ -118,8 +213,9 @@ esp_err_t AdminServer::initialize()
         if (result != ESP_OK) { httpd_ssl_stop(server_); server_ = nullptr; return result; }
     }
     for (const Route route : {Route{"/api/hub/token", HTTP_POST}, Route{"/api/hub/token", HTTP_DELETE},
-                             Route{"/api/v1/status", HTTP_GET}, Route{"/api/v1/events", HTTP_GET},
-                             Route{"/api/v1/gate/open", HTTP_POST}}) {
+                              Route{"/api/audit", HTTP_GET}, Route{"/api/audit/clear", HTTP_POST},
+                              Route{"/api/v1/status", HTTP_GET}, Route{"/api/v1/events", HTTP_GET}, Route{"/api/v1/events/stream", HTTP_GET},
+                              Route{"/api/v1/gate/open", HTTP_POST}}) {
         const httpd_uri_t uri = {.uri = route.uri, .method = route.method, .handler = handler, .user_ctx = this};
         const esp_err_t result = httpd_register_uri_handler(server_, &uri);
         if (result != ESP_OK) { httpd_ssl_stop(server_); server_ = nullptr; return result; }
@@ -137,6 +233,36 @@ esp_err_t AdminServer::initialize()
 esp_err_t AdminServer::handler(httpd_req_t* request)
 {
     return static_cast<AdminServer*>(request->user_ctx)->handle(request);
+}
+
+void AdminServer::close_stream()
+{
+    if (stream_) stream_->close();
+}
+
+esp_err_t AdminServer::handle_stream(httpd_req_t* request)
+{
+    AuditCursor cursor;
+    if (!parse_cursor(header(request, "Last-Event-ID"), &cursor))
+        return json_response(request, "400 Bad Request", "{\"error\":\"Invalid Last-Event-ID\"}");
+    if (stream_ && !stream_->closed())
+        return json_response(request, "409 Conflict", "{\"error\":\"An event stream is already active\"}");
+    delete stream_;
+    stream_ = nullptr;
+    httpd_req_t* async_request = nullptr;
+    if (httpd_req_async_handler_begin(request, &async_request) != ESP_OK)
+        return json_response(request, "503 Service Unavailable", "{\"error\":\"Event stream unavailable\"}");
+    httpd_resp_set_type(async_request, "text/event-stream");
+    httpd_resp_set_hdr(async_request, "Cache-Control", "no-store");
+    stream_ = new SseSession(*this, async_request, hub_auth_.generation());
+    const EventStreamResult result = stream_->start(cursor);
+    if (result == EventStreamResult::Ok) return ESP_OK;
+    delete stream_;
+    stream_ = nullptr;
+    const char* status = result == EventStreamResult::Busy || result == EventStreamResult::Reset ? "409 Conflict" : "503 Service Unavailable";
+    json_response(async_request, status, "{\"error\":\"Event cursor requires reset or stream is busy\"}");
+    httpd_req_async_handler_complete(async_request);
+    return ESP_OK;
 }
 
 esp_err_t AdminServer::handle(httpd_req_t* request)
@@ -159,6 +285,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         if (access != HubAuthResult::Ok)
             return json_response(request, access == HubAuthResult::Malformed ? "400 Bad Request" : "401 Unauthorized", "{\"error\":\"Invalid Bearer token\"}");
     }
+    if (path == "/api/v1/events/stream") return handle_stream(request);
     const bool mutation = request->method == HTTP_POST || request->method == HTTP_DELETE;
     if (mutation && request->method == HTTP_POST) {
         const std::string origin = header(request, "Origin");
@@ -179,7 +306,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         }
     }
     std::map<std::string, std::string> fields;
-    if (mutation) {
+    if (mutation && request->method == HTTP_POST) {
         if (request->content_len <= 0 || request->content_len > kMaxAdminBody) {
             httpd_resp_set_hdr(request, "Connection", "close");
             json_response(request, "413 Payload Too Large", "{\"error\":\"Request body must be 1 to 1024 bytes\"}");
@@ -210,14 +337,35 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     if (path == "/api/hub/token") {
         if (request->method == HTTP_DELETE) {
             const HubAuthResult result = hub_auth_.revoke();
+            if (result == HubAuthResult::Ok) close_stream();
             publish(AuditType::Authentication, result == HubAuthResult::Ok ? AuditResultCode::Accepted : AuditResultCode::Failed);
             return json_response(request, result == HubAuthResult::Ok ? "200 OK" : "503 Service Unavailable", "{\"ok\":true}");
         }
         std::string token;
         const HubAuthResult result = hub_auth_.create_or_rotate(&token);
+        if (result == HubAuthResult::Ok) close_stream();
         publish(AuditType::Authentication, result == HubAuthResult::Ok ? AuditResultCode::Accepted : AuditResultCode::Failed);
         return result == HubAuthResult::Ok ? json_response(request, "200 OK", "{\"token\":" + json_quote(token) + ",\"api_version\":1}") :
             json_response(request, "503 Service Unavailable", "{\"error\":\"Hub token storage unavailable\"}");
+    }
+    if (path == "/api/audit") {
+        AuditPage page;
+        if (audit_.store().read_after({}, AuditStore::kRecordCapacity, &page) != AuditResult::Ok)
+            return json_response(request, "503 Service Unavailable", "{\"error\":\"Audit storage unavailable\"}");
+        std::string body = "{\"events\":[";
+        for (size_t index = 0; index < page.events.size(); ++index) {
+            if (index) body += ',';
+            const AuditRecord& event = page.events[index];
+            body += "{\"id\":" + json_quote(std::to_string(event.id.epoch) + ":" + std::to_string(event.id.sequence)) +
+                    ",\"type\":" + std::to_string(static_cast<unsigned>(event.type)) + ",\"result\":" +
+                    std::to_string(static_cast<unsigned>(event.result)) + ",\"slot\":" + std::to_string(event.slot) + "}";
+        }
+        return json_response(request, "200 OK", body + "]}");
+    }
+    if (path == "/api/audit/clear") {
+        const AuditResult result = audit_.store().clear();
+        publish(AuditType::System, result == AuditResult::Ok ? AuditResultCode::Cleared : AuditResultCode::Failed);
+        return json_response(request, result == AuditResult::Ok ? "200 OK" : "503 Service Unavailable", "{\"ok\":true}");
     }
     if (path == "/api/v1/status")
         return json_response(request, "200 OK", "{\"api_version\":1,\"schema_version\":1,\"device\":" + provisioning_.status_json() + "}");

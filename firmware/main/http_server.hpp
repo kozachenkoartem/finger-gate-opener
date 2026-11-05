@@ -16,10 +16,13 @@ public:
     void start();
 
 private:
+    class SseSession;
     static void task_entry(void* context);
     static esp_err_t handler(httpd_req_t* request);
     esp_err_t handle(httpd_req_t* request);
     esp_err_t initialize();
+    esp_err_t handle_stream(httpd_req_t* request);
+    void close_stream();
     void publish(AuditType type, AuditResultCode result);
     KeyValueStore& storage_;
     Provisioning& provisioning_;
@@ -30,5 +33,6 @@ private:
     AuthService auth_;
     TlsIdentity identity_;
     httpd_handle_t server_ = nullptr;
+    SseSession* stream_ = nullptr;
 };
 }

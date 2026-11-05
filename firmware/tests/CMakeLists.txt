@@ -119,6 +119,11 @@ target_compile_features(audit_events_test PRIVATE cxx_std_17)
 target_include_directories(audit_events_test PRIVATE ../main)
 add_test(NAME audit_events_test COMMAND audit_events_test)
 
+add_executable(event_stream_test event_stream_test.cpp ../main/audit_events.cpp ../main/audit_store.cpp)
+target_compile_features(event_stream_test PRIVATE cxx_std_17)
+target_include_directories(event_stream_test PRIVATE ../main)
+add_test(NAME event_stream_test COMMAND event_stream_test)
+
 add_executable(hub_auth_test
     hub_auth_test.cpp
     ../main/hub_auth.cpp
