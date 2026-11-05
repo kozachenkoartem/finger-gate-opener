@@ -57,6 +57,12 @@ idf.py -C firmware -p <PORT> monitor
 заменой пароля. Сертификат устройства самоподписанный. Настройка, API и результаты
 проверки описаны в [`docs/https-admin.md`](docs/https-admin.md).
 
+Для доверенного локального хаба Atlas предусмотрен отдельный versioned API с
+Bearer-токеном, pinning сертификата устройства, журналом аудита, REST и SSE.
+Он доступен только в LAN и не заменяет HTTPS-администрирование. Контракт,
+ограничение на одного SSE-клиента, идемпотентные команды калитки и предупреждение
+о USB-миграции разделов описаны в [`docs/hub-api.md`](docs/hub-api.md).
+
 Временный recovery AP и смена Wi-Fi без сброса данных описаны в
 [`docs/network-recovery.md`](docs/network-recovery.md).
 
