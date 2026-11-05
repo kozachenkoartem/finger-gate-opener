@@ -108,6 +108,11 @@ target_compile_features(wifi_state_test PRIVATE cxx_std_17)
 target_include_directories(wifi_state_test PRIVATE ../main)
 add_test(NAME wifi_state_test COMMAND wifi_state_test)
 
+add_executable(audit_store_test audit_store_test.cpp ../main/audit_store.cpp)
+target_compile_features(audit_store_test PRIVATE cxx_std_17)
+target_include_directories(audit_store_test PRIVATE ../main)
+add_test(NAME audit_store_test COMMAND audit_store_test)
+
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME web_network_test COMMAND "${NODE_EXECUTABLE}"

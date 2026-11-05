@@ -1,6 +1,7 @@
 idf_component_register(SRCS "main.cpp"
                              "finger_gate_model.cpp"
-                             "audit_events.cpp"
+                              "audit_events.cpp"
+                              "audit_store.cpp"
                              "auth.cpp"
                              "auth_crypto.cpp"
                              "api_router.cpp"
@@ -21,7 +22,7 @@ idf_component_register(SRCS "main.cpp"
                              "r558s_protocol.cpp"
                        INCLUDE_DIRS "."
                        REQUIRES esp_driver_gpio esp_driver_uart esp_driver_gptimer esp_timer esp_hw_support
-                                nvs_flash esp_event esp_netif esp_wifi esp_http_server
+                                 nvs_flash esp_event esp_netif esp_wifi esp_http_server esp_partition
                                 esp_https_server mdns mbedtls json
                        EMBED_TXTFILES "../web/index.html")
 
