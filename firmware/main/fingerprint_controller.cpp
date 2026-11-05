@@ -102,6 +102,7 @@ std::string FingerprintController::command(const FingerprintCommand& command)
     if (status_.enrolling) return "busy";
     if (command.type == FingerprintCommandType::Enroll)
         return start_enrollment(command.name, command.operation_id, command.source);
+    if (command.type == FingerprintCommandType::HubOpen) return hub_open(command);
     if (command.slot >= UserRegistry::kSlotCount) return "invalid_slot";
     if (status_.quarantined.test(command.slot)) return "slot_quarantined";
     const auto previous = registry_.find(command.slot);
@@ -149,6 +150,28 @@ std::string FingerprintController::command(const FingerprintCommand& command)
     publish(AuditType::User, AuditResultCode::Accepted, command.slot, command.name.empty() ? previous->name : command.name,
             command.source);
     return "ok";
+}
+
+std::string FingerprintController::hub_open(const FingerprintCommand& command)
+{
+    const auto now = clock_.now_ms();
+    AuditRecord event;
+    event.type = AuditType::Gate;
+    event.source = AuditSource::Hub;
+    event.elapsed_ms = now;
+    std::memcpy(event.request_id.data(), command.request_id.data(), std::min(command.request_id.size(), event.request_id.size() - 1));
+    if (pulse_started_ && (now < pulse_started_ms_ || now - pulse_started_ms_ < kCooldownMs)) {
+        event.result = AuditResultCode::Rejected;
+        audit_.publish(event);
+        return "cooldown";
+    }
+    const auto pulse = gate_.pulse();
+    event.result = pulse.accepted ? AuditResultCode::Granted : AuditResultCode::Rejected;
+    audit_.publish(event);
+    if (!pulse.accepted) return "actuator_rejected";
+    pulse_started_ = true;
+    pulse_started_ms_ = pulse.started_ms;
+    return "granted";
 }
 
 std::string FingerprintController::start_enrollment(const std::string& name, uint32_t operation_id, AuditSource source)

@@ -118,12 +118,16 @@ extern "C" void app_main()
     static fg::AuditPublisher audit(audit_store);
     if (audit_store.initialize() != fg::AuditResult::Ok)
         ESP_LOGE(kLogTag, "Audit storage unavailable; local fingerprint access remains enabled");
-    static fg::FingerprintTask fingerprint_task(storage, audit);
+    static fg::HubCommandLedger hub_ledger(storage);
+    static fg::HubAuth hub_auth(storage);
+    hub_ledger.initialize();
+    hub_auth.attach_ledger(hub_ledger);
+    static fg::FingerprintTask fingerprint_task(storage, audit, hub_auth, hub_ledger);
     fingerprint_task.start();
     static fg::Provisioning provisioning(storage, fingerprint_task);
     const esp_err_t network_result = provisioning.start();
     if (network_result == ESP_OK) {
-        static fg::AdminServer admin(storage, provisioning, fingerprint_task, audit);
+        static fg::AdminServer admin(storage, provisioning, fingerprint_task, audit, hub_auth, hub_ledger);
         admin.start();
     } else {
         ESP_LOGE(kLogTag, "Networking unavailable: %s", esp_err_to_name(network_result));
