@@ -10,7 +10,7 @@
 
 namespace fg {
 
-enum class HubAuthResult { Ok, Unauthorized, Malformed, Unavailable };
+enum class HubAuthResult { Ok, Unauthorized, Malformed, RateLimited, Unavailable };
 enum class HubCommandState : uint8_t { Reserved, Executable, Running, Granted, Rejected, Interrupted, Cancelled, Failed };
 enum class HubLedgerResult { Ok, Duplicate, Full, Invalid, NotFound, Unavailable };
 
@@ -50,7 +50,7 @@ public:
 
     HubAuthResult create_or_rotate(std::string* token);
     HubAuthResult revoke();
-    HubAuthResult authorize_bearer(std::string_view header);
+    HubAuthResult authorize_bearer(std::string_view header, uint64_t now_ms = 0);
     HubLedgerResult begin_execution(std::string_view request_id);
     uint32_t generation() const;
     void attach_ledger(HubCommandLedger& ledger) { ledger_ = &ledger; }
@@ -66,6 +66,8 @@ private:
     bool active_ = false;
     uint32_t generation_ = 0;
     std::array<uint8_t, 32> verifier_{};
+    uint64_t failed_window_started_ms_ = 0;
+    uint32_t failed_attempts_ = 0;
 };
 
 }

@@ -155,19 +155,10 @@ std::string FingerprintController::command(const FingerprintCommand& command)
 std::string FingerprintController::hub_open(const FingerprintCommand& command)
 {
     const auto now = clock_.now_ms();
-    AuditRecord event;
-    event.type = AuditType::Gate;
-    event.source = AuditSource::Hub;
-    event.elapsed_ms = now;
-    std::memcpy(event.request_id.data(), command.request_id.data(), std::min(command.request_id.size(), event.request_id.size() - 1));
     if (pulse_started_ && (now < pulse_started_ms_ || now - pulse_started_ms_ < kCooldownMs)) {
-        event.result = AuditResultCode::Rejected;
-        audit_.publish(event);
         return "cooldown";
     }
     const auto pulse = gate_.pulse();
-    event.result = pulse.accepted ? AuditResultCode::Granted : AuditResultCode::Rejected;
-    audit_.publish(event);
     if (!pulse.accepted) return "actuator_rejected";
     pulse_started_ = true;
     pulse_started_ms_ = pulse.started_ms;

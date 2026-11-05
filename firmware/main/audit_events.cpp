@@ -1,5 +1,7 @@
 #include "audit_events.hpp"
 
+#include <algorithm>
+
 namespace fg {
 namespace {
 std::string json_string(const std::string& value)
@@ -45,29 +47,60 @@ size_t AuditPublisher::drain(size_t maximum)
             head_ = (head_ + 1) % queue_.size();
             --size_;
         }
-        if (store_.append(record) != AuditResult::Ok) {
-            ++failed_count_;
-            continue;
-        }
         AuditPage committed;
-        if (store_.read_after({}, AuditStore::kRecordCapacity, &committed) != AuditResult::Ok || committed.events.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(storage_mutex_);
+            if (store_.append(record) != AuditResult::Ok ||
+                store_.read_after({}, AuditStore::kRecordCapacity, &committed) != AuditResult::Ok || committed.events.empty()) {
+                ++failed_count_;
+                continue;
+            }
+        }
+        if (committed.events.empty()) {
             ++failed_count_;
             continue;
         }
         record = committed.events.back();
         ++persisted;
-        AuditSubscriber* subscriber = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            last_committed_ = record.id;
-            subscriber = subscriber_;
-            if (subscriber && (record.id.epoch != subscriber_after_.epoch || record.id.sequence > subscriber_after_.sequence)) {
-                if (!subscriber->on_audit_record(record)) subscriber_ = nullptr;
-                else subscriber_after_ = record.id;
-            }
-        }
+        deliver(record);
     }
     return persisted;
+}
+
+bool AuditPublisher::append(AuditRecord record)
+{
+    AuditPage committed;
+    {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
+        if (store_.append(record) != AuditResult::Ok ||
+            store_.read_after({}, AuditStore::kRecordCapacity, &committed) != AuditResult::Ok || committed.events.empty()) {
+            ++failed_count_;
+            return false;
+        }
+    }
+    if (committed.events.empty()) {
+        ++failed_count_;
+        return false;
+    }
+    deliver(committed.events.back());
+    return true;
+}
+
+void AuditPublisher::deliver(const AuditRecord& record)
+{
+    AuditSubscriber* subscriber = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_committed_ = record.id;
+        if (subscriber_ && (record.id.epoch != subscriber_after_.epoch || record.id.sequence > subscriber_after_.sequence))
+            subscriber = subscriber_;
+    }
+    if (!subscriber) return;
+    const bool delivered = subscriber->on_audit_record(record);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (subscriber_ != subscriber) return;
+    if (delivered) subscriber_after_ = record.id;
+    else subscriber_ = nullptr;
 }
 
 bool AuditPublisher::subscribe(AuditSubscriber& subscriber)
@@ -197,8 +230,8 @@ std::string AuditEventStream::sse_frame(const AuditRecord& record)
     const size_t type = static_cast<size_t>(record.type);
     const size_t result = static_cast<size_t>(record.result);
     const std::string id = std::to_string(record.id.epoch) + ":" + std::to_string(record.id.sequence);
-    const std::string name(record.name.data());
-    const std::string request_id(record.request_id.data());
+    const std::string name(record.name.data(), std::find(record.name.begin(), record.name.end(), '\0'));
+    const std::string request_id(record.request_id.data(), std::find(record.request_id.begin(), record.request_id.end(), '\0'));
     return "id: " + id + "\n" +
            "event: " + std::string(type < std::size(types) ? types[type] : "system") + "." +
            (result < std::size(results) ? results[result] : "failed") + "\n" +

@@ -93,6 +93,43 @@ void test_generation_change_closes_and_sse_json_is_escaped()
     require(frame.find("event: access.granted\n") != std::string::npos, "frame names event type and result");
     require(frame.find("quoted\\\"\\\\\\u000aname") != std::string::npos, "frame escapes JSON strings");
 }
+
+class ReentrantSubscriber final : public AuditSubscriber {
+public:
+    explicit ReentrantSubscriber(AuditPublisher& publisher) : publisher_(publisher) {}
+
+    bool on_audit_record(const AuditRecord&) override
+    {
+        publisher_.unsubscribe(*this);
+        called = true;
+        return true;
+    }
+
+    bool called = false;
+
+private:
+    AuditPublisher& publisher_;
+};
+
+void test_subscriber_can_unsubscribe_from_delivery_callback()
+{
+    MemoryAuditStorage storage;
+    AuditStore store(storage);
+    require(store.initialize() == AuditResult::Ok, "initialize audit store");
+    AuditPublisher publisher(store);
+    ReentrantSubscriber subscriber(publisher);
+    require(publisher.subscribe(subscriber), "subscriber registers");
+    append(publisher, event(1));
+    require(subscriber.called, "subscriber can synchronously unsubscribe from callback");
+}
+
+void test_sse_frame_handles_a_maximum_length_request_id()
+{
+    AuditRecord record = event(1);
+    record.request_id.fill('a');
+    const std::string frame = AuditEventStream::sse_frame(record);
+    require(frame.find(std::string(64, 'a')) != std::string::npos, "maximum request ID is emitted without reading past its field");
+}
 }
 
 int main()
@@ -100,5 +137,7 @@ int main()
     test_single_subscriber_replays_then_delivers_live_in_order();
     test_expired_cursor_resets_and_queue_overflow_closes_stream();
     test_generation_change_closes_and_sse_json_is_escaped();
+    test_subscriber_can_unsubscribe_from_delivery_callback();
+    test_sse_frame_handles_a_maximum_length_request_id();
     return EXIT_SUCCESS;
 }

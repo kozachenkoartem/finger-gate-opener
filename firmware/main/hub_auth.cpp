@@ -18,7 +18,10 @@ constexpr char kLedgerKey[] = "hub_ledger";
 constexpr uint32_t kAuthMagic = 0x46474841;
 constexpr uint32_t kLedgerMagic = 0x46474c47;
 constexpr uint16_t kFormatVersion = 1;
+constexpr uint16_t kLedgerFormatVersion = 2;
 constexpr size_t kLedgerCapacity = 16;
+constexpr uint32_t kMaxFailedAuthorizations = 5;
+constexpr uint64_t kAuthorizationWindowMs = 60000;
 
 struct AuthPersisted {
     uint32_t magic = kAuthMagic;
@@ -31,6 +34,19 @@ struct AuthPersisted {
 struct LedgerEntry {
     std::array<char, 65> request_id{};
     HubCommandState state = HubCommandState::Reserved;
+    uint64_t terminal_order = 0;
+};
+
+struct LegacyLedgerEntry {
+    std::array<char, 65> request_id{};
+    HubCommandState state = HubCommandState::Reserved;
+};
+
+struct LegacyLedgerPersisted {
+    uint32_t magic = kLedgerMagic;
+    uint16_t version = kFormatVersion;
+    uint16_t reserved = 0;
+    std::array<LegacyLedgerEntry, kLedgerCapacity> entries{};
 };
 
 bool sha256(std::string_view value, std::array<uint8_t, 32>* output)
@@ -51,8 +67,9 @@ bool terminal(HubCommandState state)
 
 struct HubCommandLedger::Persisted {
     uint32_t magic = kLedgerMagic;
-    uint16_t version = kFormatVersion;
+    uint16_t version = kLedgerFormatVersion;
     uint16_t reserved = 0;
+    uint64_t next_terminal_order = 1;
     std::array<LedgerEntry, kLedgerCapacity> entries{};
 };
 
@@ -66,16 +83,33 @@ HubLedgerResult HubCommandLedger::load_locked()
         loaded_ = true;
         return save_locked();
     }
-    if (result != StoreResult::Ok || bytes.size() != sizeof(Persisted)) return HubLedgerResult::Unavailable;
-    std::memcpy(persisted_, bytes.data(), sizeof(Persisted));
-    if (persisted_->magic != kLedgerMagic || persisted_->version != kFormatVersion) return HubLedgerResult::Unavailable;
+    if (result != StoreResult::Ok) return HubLedgerResult::Unavailable;
+    bool migrated = false;
+    if (bytes.size() == sizeof(Persisted)) {
+        std::memcpy(persisted_, bytes.data(), sizeof(Persisted));
+        if (persisted_->magic != kLedgerMagic || persisted_->version != kLedgerFormatVersion) return HubLedgerResult::Unavailable;
+    } else if (bytes.size() == sizeof(LegacyLedgerPersisted)) {
+        LegacyLedgerPersisted legacy;
+        std::memcpy(&legacy, bytes.data(), sizeof(legacy));
+        if (legacy.magic != kLedgerMagic || legacy.version != kFormatVersion) return HubLedgerResult::Unavailable;
+        for (size_t index = 0; index < legacy.entries.size(); ++index) {
+            persisted_->entries[index].request_id = legacy.entries[index].request_id;
+            persisted_->entries[index].state = legacy.entries[index].state;
+            if (legacy.entries[index].request_id[0] && terminal(legacy.entries[index].state))
+                persisted_->entries[index].terminal_order = persisted_->next_terminal_order++;
+        }
+        migrated = true;
+    } else {
+        return HubLedgerResult::Unavailable;
+    }
     loaded_ = true;
     bool interrupted = false;
     for (auto& entry : persisted_->entries) if (entry.request_id[0] && !terminal(entry.state)) {
         entry.state = HubCommandState::Interrupted;
+        entry.terminal_order = persisted_->next_terminal_order++;
         interrupted = true;
     }
-    return interrupted ? save_locked() : HubLedgerResult::Ok;
+    return (interrupted || migrated) ? save_locked() : HubLedgerResult::Ok;
 }
 
 HubLedgerResult HubCommandLedger::save_locked()
@@ -113,7 +147,13 @@ HubLedgerResult HubCommandLedger::reserve(std::string_view request_id)
     if (load_locked() != HubLedgerResult::Ok) return HubLedgerResult::Unavailable;
     if (find_locked(request_id) >= 0) return HubLedgerResult::Duplicate;
     auto entry = std::find_if(persisted_->entries.begin(), persisted_->entries.end(), [](const LedgerEntry& item) { return !item.request_id[0]; });
-    if (entry == persisted_->entries.end()) entry = std::find_if(persisted_->entries.begin(), persisted_->entries.end(), [](const LedgerEntry& item) { return terminal(item.state); });
+    if (entry == persisted_->entries.end()) {
+        entry = std::find_if(persisted_->entries.begin(), persisted_->entries.end(), [](const LedgerEntry& item) { return terminal(item.state); });
+        if (entry != persisted_->entries.end()) {
+            for (auto candidate = entry + 1; candidate != persisted_->entries.end(); ++candidate)
+                if (terminal(candidate->state) && candidate->terminal_order < entry->terminal_order) entry = candidate;
+        }
+    }
     if (entry == persisted_->entries.end()) return HubLedgerResult::Full;
     *entry = {};
     std::memcpy(entry->request_id.data(), request_id.data(), request_id.size());
@@ -153,6 +193,7 @@ HubLedgerResult HubCommandLedger::cancel_unstarted()
     for (auto& entry : persisted_->entries) if (entry.request_id[0] &&
         (entry.state == HubCommandState::Reserved || entry.state == HubCommandState::Executable)) {
         entry.state = HubCommandState::Cancelled;
+        entry.terminal_order = persisted_->next_terminal_order++;
         changed = true;
     }
     return changed ? save_locked() : HubLedgerResult::Ok;
@@ -166,8 +207,10 @@ HubLedgerResult HubCommandLedger::complete(std::string_view request_id, HubComma
     const int index = find_locked(request_id);
     if (index < 0) return HubLedgerResult::NotFound;
     auto& entry = persisted_->entries[index];
-    if (entry.state != HubCommandState::Running) return HubLedgerResult::Duplicate;
+    if (entry.state != HubCommandState::Running && !(result == HubCommandState::Failed &&
+        (entry.state == HubCommandState::Reserved || entry.state == HubCommandState::Executable))) return HubLedgerResult::Duplicate;
     entry.state = result;
+    entry.terminal_order = persisted_->next_terminal_order++;
     return save_locked();
 }
 
@@ -231,20 +274,30 @@ HubAuthResult HubAuth::revoke()
     return result;
 }
 
-HubAuthResult HubAuth::authorize_bearer(std::string_view header)
+HubAuthResult HubAuth::authorize_bearer(std::string_view header, uint64_t now_ms)
 {
     constexpr std::string_view kPrefix = "Bearer ";
-    if (header.substr(0, kPrefix.size()) != kPrefix || header.size() != kPrefix.size() + 64) return HubAuthResult::Malformed;
-    const std::string_view token = header.substr(kPrefix.size());
-    if (!std::all_of(token.begin(), token.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) return HubAuthResult::Malformed;
     std::array<uint8_t, 32> candidate{};
-    if (!sha256(token, &candidate)) return HubAuthResult::Unavailable;
+    const bool well_formed = header.substr(0, kPrefix.size()) == kPrefix && header.size() == kPrefix.size() + 64 &&
+        std::all_of(header.begin() + std::min(header.size(), kPrefix.size()), header.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        });
+    if (well_formed && !sha256(header.substr(kPrefix.size()), &candidate)) return HubAuthResult::Unavailable;
     std::lock_guard<std::mutex> lock(mutex_);
     const HubAuthResult loaded = load_locked();
-    const bool matches = active_ && auth_crypto::constant_time_equal(candidate.data(), verifier_.data(), verifier_.size());
+    const bool matches = well_formed && active_ && auth_crypto::constant_time_equal(candidate.data(), verifier_.data(), verifier_.size());
     auth_crypto::wipe(candidate.data(), candidate.size());
     if (loaded != HubAuthResult::Ok) return loaded;
-    return matches ? HubAuthResult::Ok : HubAuthResult::Unauthorized;
+    if (matches) { failed_attempts_ = 0; return HubAuthResult::Ok; }
+    if (now_ms != 0) {
+        if (now_ms < failed_window_started_ms_ || now_ms - failed_window_started_ms_ >= kAuthorizationWindowMs) {
+            failed_window_started_ms_ = now_ms;
+            failed_attempts_ = 0;
+        }
+        if (failed_attempts_ >= kMaxFailedAuthorizations) return HubAuthResult::RateLimited;
+        ++failed_attempts_;
+    }
+    return well_formed ? HubAuthResult::Unauthorized : HubAuthResult::Malformed;
 }
 
 HubLedgerResult HubAuth::begin_execution(std::string_view request_id)

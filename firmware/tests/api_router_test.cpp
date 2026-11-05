@@ -46,5 +46,11 @@ int main()
     require(fg::session_cookie_token("prefix__Host-fg_session=" + token).empty(), "cookie substring rejected");
     require(fg::session_cookie_token("__Host-fg_session=" + token + "; __Host-fg_session=" + token).empty(), "duplicate cookies rejected");
     require(fg::session_cookie_token("__Host-fg_session=bad").empty(), "short token rejected");
+    fg::EventQuery event_query;
+    require(fg::parse_event_query("after=12:34&limit=2", &event_query) &&
+                event_query.after.epoch == 12 && event_query.after.sequence == 34 && event_query.limit == 2,
+            "event query accepts an opaque cursor and a bounded limit");
+    for (const auto* query : {"after=12", "after=12:34:56", "limit=0", "limit=65", "limit=2&limit=3", "unknown=1"})
+        require(!fg::parse_event_query(query, &event_query), "malformed or ambiguous event query is rejected");
     return EXIT_SUCCESS;
 }

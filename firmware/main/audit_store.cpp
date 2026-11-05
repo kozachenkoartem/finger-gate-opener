@@ -123,10 +123,10 @@ AuditResult AuditStore::initialize()
     std::array<uint8_t, kSectorSize> sector{};
     Metadata newest{};
     int newest_slot = -1;
-    bool empty_metadata = true;
+    bool current_metadata = false;
     for (int slot = 0; slot < 2; ++slot) {
         if (storage_.read(slot * kSectorSize, sector.data(), sector.size()) != AuditResult::Ok) return AuditResult::Unavailable;
-        empty_metadata = empty_metadata && erased(sector.data(), sector.size());
+        current_metadata = current_metadata || get<uint32_t>(sector.data(), 0) == kMetadataMagic;
         if (get<uint32_t>(sector.data(), 0) != kMetadataMagic || get<uint16_t>(sector.data(), 4) != kFormatVersion ||
             get<uint32_t>(sector.data(), kMetadataCrcOffset) != crc32(sector.data(), kMetadataCrcOffset)) continue;
         Metadata candidate{sector[6] != 0, get<uint64_t>(sector.data(), 8), get<uint32_t>(sector.data(), 16),
@@ -138,7 +138,7 @@ AuditResult AuditStore::initialize()
         }
     }
     if (newest_slot < 0) {
-        if (!empty_metadata) return AuditResult::Corrupt;
+        if (current_metadata) return AuditResult::Corrupt;
         for (size_t offset = 0; offset < kPartitionSize; offset += kSectorSize) {
             const AuditResult result = storage_.erase(offset, kSectorSize);
             if (result != AuditResult::Ok) return result;
@@ -281,10 +281,34 @@ AuditResult AuditStore::append(AuditRecord event)
             break;
         }
     }
-    if (spare_sector > kRecordSectors) return AuditResult::Unavailable;
+    if (spare_sector > kRecordSectors) {
+        size_t incomplete_sector = kRecordSectors + 1;
+        for (size_t sector_index = 0; sector_index <= kRecordSectors; ++sector_index) {
+            size_t valid_records = 0;
+            for (size_t slot = 0; slot < kSectorSize / kRecordSize; ++slot) {
+                result = storage_.read(kDataOffset + sector_index * kSectorSize + slot * kRecordSize, sector.data(), kRecordSize);
+                if (result != AuditResult::Ok) return result;
+                if (get<uint32_t>(sector.data(), 0) == kRecordMagic && get<uint16_t>(sector.data(), 4) == kFormatVersion &&
+                    get<uint32_t>(sector.data(), kRecordCrcOffset) == crc32(sector.data(), kRecordCrcOffset)) ++valid_records;
+            }
+            if (valid_records < kSectorSize / kRecordSize) { incomplete_sector = sector_index; break; }
+        }
+        const size_t recovery_sector = incomplete_sector <= kRecordSectors ? incomplete_sector : oldest_sector;
+        result = storage_.erase(kDataOffset + recovery_sector * kSectorSize, kSectorSize);
+        if (result != AuditResult::Ok) return result;
+        result = load_records(&records);
+        if (result != AuditResult::Ok) return result;
+        for (size_t index = 0; index <= kRecordSectors; ++index) {
+            result = storage_.read(kDataOffset + index * kSectorSize, sector.data(), sector.size());
+            if (result != AuditResult::Ok) return result;
+            if (erased(sector.data(), sector.size())) { spare_sector = index; break; }
+        }
+        if (spare_sector > kRecordSectors || records.empty()) return AuditResult::Unavailable;
+    }
+    const size_t recovered_oldest_sector = (records.front().offset - kDataOffset) / kSectorSize;
     size_t destination = kDataOffset + spare_sector * kSectorSize;
     for (const StoredRecord& record : records) {
-        if ((record.offset - kDataOffset) / kSectorSize == oldest_sector && record.record.id.sequence != records.front().record.id.sequence) {
+        if ((record.offset - kDataOffset) / kSectorSize == recovered_oldest_sector && record.record.id.sequence != records.front().record.id.sequence) {
             result = write_record(destination, record.record);
             if (result != AuditResult::Ok) return result;
             destination += kRecordSize;
@@ -292,7 +316,7 @@ AuditResult AuditStore::append(AuditRecord event)
     }
     result = write_record(destination, event);
     if (result != AuditResult::Ok) return result;
-    return storage_.erase(kDataOffset + oldest_sector * kSectorSize, kSectorSize);
+    return storage_.erase(kDataOffset + recovered_oldest_sector * kSectorSize, kSectorSize);
 }
 
 AuditResult AuditStore::read_after(AuditCursor after, size_t limit, AuditPage* page)

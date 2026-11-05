@@ -200,7 +200,20 @@ void FingerprintTask::run()
                 hub_auth_.begin_execution(command.request_id) != HubLedgerResult::Ok ? "cancelled" : controller->command(command);
             if (queued.type == FingerprintCommandType::HubOpen) {
                 const auto outcome = result == "granted" ? HubCommandState::Granted : HubCommandState::Rejected;
-                if (result != "cancelled") hub_ledger_.complete(command.request_id, outcome);
+                AuditRecord event;
+                event.type = AuditType::Gate;
+                event.result = result == "granted" ? AuditResultCode::Granted : AuditResultCode::Rejected;
+                event.source = AuditSource::Hub;
+                event.elapsed_ms = clock.now_ms();
+                std::memcpy(event.request_id.data(), command.request_id.data(), std::min(command.request_id.size(), event.request_id.size()));
+                if (result != "cancelled") {
+                    audit_.append(event);
+                    hub_ledger_.complete(command.request_id, outcome);
+                }
+                else {
+                    hub_ledger_.complete(command.request_id, HubCommandState::Failed);
+                    audit_.append(event);
+                }
             }
             if (result != "ok") {
                 AuditRecord event;

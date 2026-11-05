@@ -23,7 +23,7 @@ private:
     esp_err_t initialize();
     esp_err_t handle_stream(httpd_req_t* request);
     void close_stream();
-    void publish(AuditType type, AuditResultCode result);
+    void publish(AuditType type, AuditResultCode result, AuditSource source = AuditSource::Admin);
     KeyValueStore& storage_;
     Provisioning& provisioning_;
     FingerprintTask& fingerprints_;

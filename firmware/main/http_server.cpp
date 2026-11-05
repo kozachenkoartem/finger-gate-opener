@@ -1,6 +1,7 @@
 #include "http_server.hpp"
 #include "api_router.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <atomic>
 #include <map>
@@ -30,6 +31,17 @@ std::string header(httpd_req_t* request, const char* name)
     if (httpd_req_get_hdr_value_str(request, name, value.data(), value.size()) != ESP_OK) return {};
     value.resize(size);
     return value;
+}
+
+std::string audit_event_json(const AuditRecord& event)
+{
+    const std::string name(event.name.data(), std::find(event.name.begin(), event.name.end(), '\0'));
+    const std::string request_id(event.request_id.data(), std::find(event.request_id.begin(), event.request_id.end(), '\0'));
+    return "{\"id\":" + json_quote(std::to_string(event.id.epoch) + ":" + std::to_string(event.id.sequence)) +
+        ",\"type\":" + std::to_string(static_cast<unsigned>(event.type)) + ",\"result\":" +
+        std::to_string(static_cast<unsigned>(event.result)) + ",\"source\":" +
+        std::to_string(static_cast<unsigned>(event.source)) + ",\"slot\":" + std::to_string(event.slot) +
+        ",\"name\":" + json_quote(name) + ",\"request_id\":" + json_quote(request_id) + "}";
 }
 
 esp_err_t json_response(httpd_req_t* request, const char* status, const std::string& body)
@@ -66,23 +78,6 @@ std::string session_json(const Session& session)
         (session.password_change_required ? "true}" : "false}");
 }
 
-bool parse_cursor(const std::string& text, AuditCursor* cursor)
-{
-    if (text.empty()) { *cursor = {}; return true; }
-    const size_t colon = text.find(':');
-    if (colon == 0 || colon == std::string::npos || colon + 1 == text.size() || text.find(':', colon + 1) != std::string::npos) return false;
-    uint64_t values[2]{};
-    size_t part = 0;
-    for (char character : text) {
-        if (character == ':') { ++part; continue; }
-        if (character < '0' || character > '9' || values[part] > (UINT64_MAX - static_cast<uint64_t>(character - '0')) / 10) return false;
-        values[part] = values[part] * 10 + static_cast<uint64_t>(character - '0');
-    }
-    if (values[0] > UINT32_MAX) return false;
-    *cursor = {static_cast<uint32_t>(values[0]), values[1]};
-    return true;
-}
-
 }
 
 class AdminServer::SseSession {
@@ -104,7 +99,6 @@ public:
     void close()
     {
         stream_.close();
-        httpd_sess_trigger_close(owner_.server_, socket_);
         schedule();
     }
 
@@ -127,7 +121,7 @@ private:
             session->finish();
             return;
         }
-        if (session->replay_index_ < session->replay_.events.size()) session->schedule();
+        session->schedule();
     }
 
     void schedule()
@@ -161,12 +155,12 @@ private:
     std::atomic<bool> completed_{false};
 };
 
-void AdminServer::publish(AuditType type, AuditResultCode result)
+void AdminServer::publish(AuditType type, AuditResultCode result, AuditSource source)
 {
     AuditRecord event;
     event.type = type;
     event.result = result;
-    event.source = AuditSource::Admin;
+    event.source = source;
     event.elapsed_ms = now_ms();
     audit_.publish(event);
 }
@@ -243,7 +237,7 @@ void AdminServer::close_stream()
 esp_err_t AdminServer::handle_stream(httpd_req_t* request)
 {
     AuditCursor cursor;
-    if (!parse_cursor(header(request, "Last-Event-ID"), &cursor))
+    if (!parse_event_cursor(header(request, "Last-Event-ID"), &cursor))
         return json_response(request, "400 Bad Request", "{\"error\":\"Invalid Last-Event-ID\"}");
     if (stream_ && !stream_->closed())
         return json_response(request, "409 Conflict", "{\"error\":\"An event stream is already active\"}");
@@ -271,7 +265,10 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(request, "X-Frame-Options", "DENY");
     httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer");
-    const std::string path = request->uri;
+    const std::string uri = request->uri;
+    const size_t query_start = uri.find('?');
+    const std::string path = uri.substr(0, query_start);
+    const std::string query = query_start == std::string::npos ? "" : uri.substr(query_start + 1);
     if (path == "/") {
         httpd_resp_set_type(request, "text/html; charset=utf-8");
         httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
@@ -281,9 +278,15 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     if (hub_api) {
         if (!header(request, "Cookie").empty() || !header(request, "X-CSRF-Token").empty())
             return json_response(request, "400 Bad Request", "{\"error\":\"Hub routes do not accept session credentials\"}");
-        const HubAuthResult access = hub_auth_.authorize_bearer(header(request, "Authorization"));
-        if (access != HubAuthResult::Ok)
+        const HubAuthResult access = hub_auth_.authorize_bearer(header(request, "Authorization"), now_ms());
+        if (access != HubAuthResult::Ok) {
+            publish(AuditType::Authentication, AuditResultCode::Rejected, AuditSource::Hub);
+            if (access == HubAuthResult::RateLimited) {
+                httpd_resp_set_hdr(request, "Retry-After", "60");
+                return json_response(request, "429 Too Many Requests", "{\"error\":\"Too many token attempts\"}");
+            }
             return json_response(request, access == HubAuthResult::Malformed ? "400 Bad Request" : "401 Unauthorized", "{\"error\":\"Invalid Bearer token\"}");
+        }
     }
     if (path == "/api/v1/events/stream") return handle_stream(request);
     const bool mutation = request->method == HTTP_POST || request->method == HTTP_DELETE;
@@ -370,19 +373,38 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     if (path == "/api/v1/status")
         return json_response(request, "200 OK", "{\"api_version\":1,\"schema_version\":1,\"device\":" + provisioning_.status_json() + "}");
     if (path == "/api/v1/events") {
+        EventQuery event_query;
+        if (!parse_event_query(query, &event_query))
+            return json_response(request, "400 Bad Request", "{\"error\":\"Invalid events query\"}");
         AuditPage page;
-        const AuditResult result = audit_.store().read_after({}, 64, &page);
+        const AuditResult result = audit_.store().read_after(event_query.after, event_query.limit, &page);
+        AuditPage retained;
+        const AuditResult retained_result = audit_.store().read_after({}, AuditStore::kRecordCapacity, &retained);
+        if (result == AuditResult::Invalid && retained_result == AuditResult::Ok) {
+            const std::string first = retained.events.empty() ? "0:0" :
+                std::to_string(retained.events.front().id.epoch) + ":" + std::to_string(retained.events.front().id.sequence);
+            const std::string last = retained.events.empty() ? "0:0" :
+                std::to_string(retained.events.back().id.epoch) + ":" + std::to_string(retained.events.back().id.sequence);
+            return json_response(request, "409 Conflict", "{\"error\":\"Event cursor requires reset\",\"retained_from\":" +
+                json_quote(first) + ",\"retained_to\":" + json_quote(last) + "}");
+        }
         if (result != AuditResult::Ok) return json_response(request, "503 Service Unavailable", "{\"error\":\"Audit storage unavailable\"}");
+        if (retained_result != AuditResult::Ok) return json_response(request, "503 Service Unavailable", "{\"error\":\"Audit storage unavailable\"}");
         std::string body = "{\"api_version\":1,\"events\":[";
         bool comma = false;
         for (const auto& event : page.events) {
             if (comma) body += ',';
             comma = true;
-            body += "{\"id\":" + json_quote(std::to_string(event.id.epoch) + ":" + std::to_string(event.id.sequence)) +
-                    ",\"type\":" + std::to_string(static_cast<unsigned>(event.type)) + ",\"result\":" +
-                    std::to_string(static_cast<unsigned>(event.result)) + "}";
+            body += audit_event_json(event);
         }
-        return json_response(request, "200 OK", body + "]}");
+        const std::string first = retained.events.empty() ? "0:0" :
+            std::to_string(retained.events.front().id.epoch) + ":" + std::to_string(retained.events.front().id.sequence);
+        const std::string last = retained.events.empty() ? "0:0" :
+            std::to_string(retained.events.back().id.epoch) + ":" + std::to_string(retained.events.back().id.sequence);
+        return json_response(request, "200 OK", body + "],\"next_after\":" +
+            json_quote(std::to_string(page.next_after.epoch) + ":" + std::to_string(page.next_after.sequence)) +
+            ",\"has_more\":" + (page.has_more ? "true" : "false") + ",\"retained_from\":" +
+            json_quote(first) + ",\"retained_to\":" + json_quote(last) + "}");
     }
     if (path == "/api/v1/gate/open") {
         const std::string& request_id = fields["request_id"];
@@ -398,8 +420,8 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         event.result = AuditResultCode::Accepted;
         event.source = AuditSource::Hub;
         event.elapsed_ms = now_ms();
-        std::memcpy(event.request_id.data(), request_id.data(), request_id.size());
-        if (audit_.store().append(event) != AuditResult::Ok || hub_ledger_.mark_executable(request_id) != HubLedgerResult::Ok) {
+        std::memcpy(event.request_id.data(), request_id.data(), std::min(request_id.size(), event.request_id.size()));
+        if (!audit_.append(event) || hub_ledger_.mark_executable(request_id) != HubLedgerResult::Ok) {
             hub_ledger_.complete(request_id, HubCommandState::Failed);
             return json_response(request, "503 Service Unavailable", "{\"error\":\"Command was not accepted\"}");
         }

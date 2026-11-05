@@ -229,6 +229,21 @@ void test_interrupted_rotation_recovers_before_the_next_append()
     require(rebooted.append(event) == fg::AuditResult::Ok, "append completes after erase interruption");
 }
 
+void test_stale_unformatted_audit_partition_is_reinitialized()
+{
+    fg::MemoryAuditStorage storage;
+    fg::AuditStore first(storage);
+    require(first.initialize() == fg::AuditResult::Ok, "first store initializes");
+    fg::AuditRecord event{};
+    require(first.append(event) == fg::AuditResult::Ok, "stale-format fixture commits");
+    storage.corrupt_byte(0);
+    fg::AuditStore migrated(storage);
+    require(migrated.initialize() == fg::AuditResult::Ok, "unknown old audit format is reinitialized");
+    fg::AuditPage page;
+    require(migrated.read_after({}, 1, &page) == fg::AuditResult::Ok && page.events.empty(),
+            "stale records are not exposed after reinitialization");
+}
+
 void test_interrupted_clear_completes_on_reboot_in_a_new_epoch()
 {
     fg::MemoryAuditStorage storage;
@@ -270,6 +285,7 @@ int main()
     test_storage_commit_failure_does_not_publish_event();
     test_recovery_ignores_torn_and_corrupt_records_without_reusing_ids();
     test_interrupted_rotation_recovers_before_the_next_append();
+    test_stale_unformatted_audit_partition_is_reinitialized();
     test_interrupted_clear_completes_on_reboot_in_a_new_epoch();
     std::cout << "Audit store: PASS\n";
 }
