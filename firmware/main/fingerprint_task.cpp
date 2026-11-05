@@ -108,9 +108,9 @@ void FingerprintTask::set_provisioning(ProvisioningIndicatorState state)
     if (indication_queue_) xQueueOverwrite(indication_queue_, &state);
 }
 
-uint32_t FingerprintTask::submit(const FingerprintCommand& command)
+CommandReceipt FingerprintTask::submit(const FingerprintCommand& command)
 {
-    if (!command_queue_ || command.name.size() > 64) return 0;
+    if (!command_queue_ || command.name.size() > 64 || command.request_id.size() > 64) return {};
     QueuedCommand queued = {};
     queued.id = next_command_id_.fetch_add(1) & 0x7fffffff;
     if (queued.id == 0) queued.id = next_command_id_.fetch_add(1) & 0x7fffffff;
@@ -120,7 +120,8 @@ uint32_t FingerprintTask::submit(const FingerprintCommand& command)
     queued.operation_id = command.operation_id;
     queued.source = command.source;
     std::memcpy(queued.name, command.name.data(), command.name.size());
-    return xQueueSend(command_queue_, &queued, 0) == pdTRUE ? queued.id : 0;
+    std::memcpy(queued.request_id, command.request_id.data(), command.request_id.size());
+    return xQueueSend(command_queue_, &queued, 0) == pdTRUE ? CommandReceipt{queued.id, "accepted"} : CommandReceipt{};
 }
 
 std::string FingerprintTask::snapshot_json()
@@ -194,8 +195,13 @@ void FingerprintTask::run()
         // Не более одной веб-команды за проход: очередь не вытесняет распознавание.
         if (xQueueReceive(command_queue_, &queued, 0) == pdTRUE) {
             FingerprintCommand command{queued.type, queued.slot, queued.name, queued.role,
-                queued.type == FingerprintCommandType::Enroll ? queued.id : queued.operation_id, queued.source};
-            const auto result = controller->command(command);
+                queued.type == FingerprintCommandType::Enroll ? queued.id : queued.operation_id, queued.source, queued.request_id};
+            const auto result = queued.type == FingerprintCommandType::HubOpen &&
+                hub_auth_.begin_execution(command.request_id) != HubLedgerResult::Ok ? "cancelled" : controller->command(command);
+            if (queued.type == FingerprintCommandType::HubOpen) {
+                const auto outcome = result == "granted" ? HubCommandState::Granted : HubCommandState::Rejected;
+                if (result != "cancelled") hub_ledger_.complete(command.request_id, outcome);
+            }
             if (result != "ok") {
                 AuditRecord event;
                 event.type = queued.type == FingerprintCommandType::Enroll ? AuditType::Enrollment : AuditType::User;

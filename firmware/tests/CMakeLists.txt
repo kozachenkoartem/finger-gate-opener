@@ -119,6 +119,17 @@ target_compile_features(audit_events_test PRIVATE cxx_std_17)
 target_include_directories(audit_events_test PRIVATE ../main)
 add_test(NAME audit_events_test COMMAND audit_events_test)
 
+add_executable(hub_auth_test
+    hub_auth_test.cpp
+    ../main/hub_auth.cpp
+    ../main/auth_crypto.cpp
+    ../main/user_store.cpp
+    ../main/finger_gate_model.cpp)
+target_compile_features(hub_auth_test PRIVATE cxx_std_17)
+target_include_directories(hub_auth_test PRIVATE ../main)
+target_link_libraries(hub_auth_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hub_auth_test COMMAND hub_auth_test)
+
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME web_network_test COMMAND "${NODE_EXECUTABLE}"

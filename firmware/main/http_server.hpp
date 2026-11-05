@@ -5,12 +5,14 @@
 #include "esp_http_server.h"
 #include "provisioning.hpp"
 #include "tls_identity.hpp"
+#include "hub_auth.hpp"
 
 namespace fg {
 class AdminServer {
 public:
-    AdminServer(KeyValueStore& storage, Provisioning& provisioning, FingerprintTask& fingerprints, AuditPublisher& audit)
-        : storage_(storage), provisioning_(provisioning), fingerprints_(fingerprints), audit_(audit), auth_(storage) {}
+    AdminServer(KeyValueStore& storage, Provisioning& provisioning, FingerprintTask& fingerprints, AuditPublisher& audit,
+                HubAuth& hub_auth, HubCommandLedger& hub_ledger)
+        : storage_(storage), provisioning_(provisioning), fingerprints_(fingerprints), audit_(audit), hub_auth_(hub_auth), hub_ledger_(hub_ledger), auth_(storage) {}
     void start();
 
 private:
@@ -23,6 +25,8 @@ private:
     Provisioning& provisioning_;
     FingerprintTask& fingerprints_;
     AuditPublisher& audit_;
+    HubAuth& hub_auth_;
+    HubCommandLedger& hub_ledger_;
     AuthService auth_;
     TlsIdentity identity_;
     httpd_handle_t server_ = nullptr;

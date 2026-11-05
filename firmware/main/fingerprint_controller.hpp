@@ -41,7 +41,7 @@ public:
     virtual uint64_t now_ms() const = 0;
 };
 
-enum class FingerprintCommandType { Enroll, Cancel, Rename, SetRole, Delete };
+enum class FingerprintCommandType { Enroll, Cancel, Rename, SetRole, Delete, HubOpen };
 struct FingerprintCommand {
     FingerprintCommandType type;
     uint16_t slot = 0;
@@ -49,6 +49,7 @@ struct FingerprintCommand {
     Role role = Role::User;
     uint32_t operation_id = 0;
     AuditSource source = AuditSource::Admin;
+    std::string request_id;
 };
 enum class FingerprintSignal { None, Success, Failure, Enrollment };
 struct FingerprintSnapshot {
@@ -102,6 +103,7 @@ private:
     void publish(AuditType type, AuditResultCode result, uint16_t slot, const std::string& name = {},
                  AuditSource source = AuditSource::Fingerprint);
     void rejected_match(uint16_t slot);
+    std::string hub_open(const FingerprintCommand& command);
 
     UserStore store_;
     FingerprintSensor& sensor_;

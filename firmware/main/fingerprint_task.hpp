@@ -10,15 +10,17 @@
 #include "gate_actuator.hpp"
 #include "indicator.hpp"
 #include "r558s_driver.hpp"
+#include "hub_auth.hpp"
 
 namespace fg {
 struct CommandReceipt { uint32_t id = 0; std::string result; };
 class FingerprintTask {
 public:
-    FingerprintTask(KeyValueStore& storage, AuditPublisher& audit) : storage_(storage), audit_(audit) {}
+    FingerprintTask(KeyValueStore& storage, AuditPublisher& audit, HubAuth& hub_auth, HubCommandLedger& hub_ledger)
+        : storage_(storage), audit_(audit), hub_auth_(hub_auth), hub_ledger_(hub_ledger) {}
     void start();
     void set_provisioning(ProvisioningIndicatorState state);
-    uint32_t submit(const FingerprintCommand& command);
+    CommandReceipt submit(const FingerprintCommand& command);
     std::string snapshot_json();
 
 private:
@@ -30,6 +32,7 @@ private:
         Role role;
         uint32_t operation_id;
         AuditSource source;
+        char request_id[65];
     };
     static void task_entry(void* context);
     void run();
@@ -37,6 +40,8 @@ private:
 
     KeyValueStore& storage_;
     AuditPublisher& audit_;
+    HubAuth& hub_auth_;
+    HubCommandLedger& hub_ledger_;
     QueueHandle_t indication_queue_ = nullptr;
     QueueHandle_t command_queue_ = nullptr;
     std::atomic<uint32_t> next_command_id_{1};

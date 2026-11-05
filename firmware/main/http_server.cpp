@@ -95,7 +95,7 @@ esp_err_t AdminServer::initialize()
 {
     if (auth_.initialize() != AuthResult::Ok || !identity_.initialize(storage_, provisioning_.hostname())) return ESP_FAIL;
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-    config.httpd.max_uri_handlers = 18;
+    config.httpd.max_uri_handlers = 22;
     config.httpd.max_open_sockets = 3;
     config.httpd.max_resp_headers = 12;
     config.httpd.stack_size = 12288;
@@ -112,7 +112,14 @@ esp_err_t AdminServer::initialize()
                             {"/api/fingerprints", HTTP_GET}, {"/api/enrollment/start", HTTP_POST},
                             {"/api/enrollment/cancel", HTTP_POST}, {"/api/users/rename", HTTP_POST},
                             {"/api/users/role", HTTP_POST}, {"/api/users/delete", HTTP_POST},
-                            {"/api/network/recovery", HTTP_POST}, {"/api/network/ap-password", HTTP_POST}}) {
+                             {"/api/network/recovery", HTTP_POST}, {"/api/network/ap-password", HTTP_POST}}) {
+        const httpd_uri_t uri = {.uri = route.uri, .method = route.method, .handler = handler, .user_ctx = this};
+        const esp_err_t result = httpd_register_uri_handler(server_, &uri);
+        if (result != ESP_OK) { httpd_ssl_stop(server_); server_ = nullptr; return result; }
+    }
+    for (const Route route : {Route{"/api/hub/token", HTTP_POST}, Route{"/api/hub/token", HTTP_DELETE},
+                             Route{"/api/v1/status", HTTP_GET}, Route{"/api/v1/events", HTTP_GET},
+                             Route{"/api/v1/gate/open", HTTP_POST}}) {
         const httpd_uri_t uri = {.uri = route.uri, .method = route.method, .handler = handler, .user_ctx = this};
         const esp_err_t result = httpd_register_uri_handler(server_, &uri);
         if (result != ESP_OK) { httpd_ssl_stop(server_); server_ = nullptr; return result; }
@@ -144,8 +151,16 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
         return httpd_resp_send(request, reinterpret_cast<const char*>(kPageStart), kPageEnd - kPageStart);
     }
-    const bool mutation = request->method == HTTP_POST;
-    if (mutation) {
+    const bool hub_api = path.rfind("/api/v1/", 0) == 0;
+    if (hub_api) {
+        if (!header(request, "Cookie").empty() || !header(request, "X-CSRF-Token").empty())
+            return json_response(request, "400 Bad Request", "{\"error\":\"Hub routes do not accept session credentials\"}");
+        const HubAuthResult access = hub_auth_.authorize_bearer(header(request, "Authorization"));
+        if (access != HubAuthResult::Ok)
+            return json_response(request, access == HubAuthResult::Malformed ? "400 Bad Request" : "401 Unauthorized", "{\"error\":\"Invalid Bearer token\"}");
+    }
+    const bool mutation = request->method == HTTP_POST || request->method == HTTP_DELETE;
+    if (mutation && request->method == HTTP_POST) {
         const std::string origin = header(request, "Origin");
         if (header(request, "Sec-Fetch-Site") == "cross-site" ||
             (!origin.empty() && origin != "https://" + header(request, "Host"))) {
@@ -155,7 +170,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     const std::string token = session_cookie_token(header(request, "Cookie"));
     const std::string csrf = header(request, "X-CSRF-Token");
     Session session;
-    if (path != "/api/login") {
+    if (!hub_api && path != "/api/login") {
         const bool allow_change = path == "/api/session" || path == "/api/password" || path == "/api/logout";
         const AuthResult access = auth_.authorize(token, csrf, mutation, allow_change, now_ms(), &session);
         if (access != AuthResult::Ok) {
@@ -179,6 +194,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         }
         std::vector<std::string> allowed;
         if (path == "/api/login") allowed = {"username", "password"};
+        if (path == "/api/v1/gate/open") allowed = {"request_id"};
         if (path == "/api/password") allowed = {"new_password"};
         if (path == "/api/wifi") allowed = {"ssid", "password"};
         if (path == "/api/network/ap-password") allowed = {"password"};
@@ -190,6 +206,61 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         if (!parse_admin_json(header(request, "Content-Type"), body, allowed, &fields)) {
             return json_response(request, "400 Bad Request", "{\"error\":\"Expected a JSON object with known string fields\"}");
         }
+    }
+    if (path == "/api/hub/token") {
+        if (request->method == HTTP_DELETE) {
+            const HubAuthResult result = hub_auth_.revoke();
+            publish(AuditType::Authentication, result == HubAuthResult::Ok ? AuditResultCode::Accepted : AuditResultCode::Failed);
+            return json_response(request, result == HubAuthResult::Ok ? "200 OK" : "503 Service Unavailable", "{\"ok\":true}");
+        }
+        std::string token;
+        const HubAuthResult result = hub_auth_.create_or_rotate(&token);
+        publish(AuditType::Authentication, result == HubAuthResult::Ok ? AuditResultCode::Accepted : AuditResultCode::Failed);
+        return result == HubAuthResult::Ok ? json_response(request, "200 OK", "{\"token\":" + json_quote(token) + ",\"api_version\":1}") :
+            json_response(request, "503 Service Unavailable", "{\"error\":\"Hub token storage unavailable\"}");
+    }
+    if (path == "/api/v1/status")
+        return json_response(request, "200 OK", "{\"api_version\":1,\"schema_version\":1,\"device\":" + provisioning_.status_json() + "}");
+    if (path == "/api/v1/events") {
+        AuditPage page;
+        const AuditResult result = audit_.store().read_after({}, 64, &page);
+        if (result != AuditResult::Ok) return json_response(request, "503 Service Unavailable", "{\"error\":\"Audit storage unavailable\"}");
+        std::string body = "{\"api_version\":1,\"events\":[";
+        bool comma = false;
+        for (const auto& event : page.events) {
+            if (comma) body += ',';
+            comma = true;
+            body += "{\"id\":" + json_quote(std::to_string(event.id.epoch) + ":" + std::to_string(event.id.sequence)) +
+                    ",\"type\":" + std::to_string(static_cast<unsigned>(event.type)) + ",\"result\":" +
+                    std::to_string(static_cast<unsigned>(event.result)) + "}";
+        }
+        return json_response(request, "200 OK", body + "]}");
+    }
+    if (path == "/api/v1/gate/open") {
+        const std::string& request_id = fields["request_id"];
+        const HubLedgerResult reserved = hub_ledger_.reserve(request_id);
+        if (reserved == HubLedgerResult::Duplicate) {
+            HubCommand command;
+            hub_ledger_.get(request_id, &command);
+            return json_response(request, "202 Accepted", "{\"request_id\":" + json_quote(request_id) + ",\"state\":" + std::to_string(static_cast<unsigned>(command.state)) + "}");
+        }
+        if (reserved != HubLedgerResult::Ok) return json_response(request, reserved == HubLedgerResult::Invalid ? "400 Bad Request" : "503 Service Unavailable", "{\"error\":\"Command unavailable\"}");
+        AuditRecord event;
+        event.type = AuditType::Gate;
+        event.result = AuditResultCode::Accepted;
+        event.source = AuditSource::Hub;
+        event.elapsed_ms = now_ms();
+        std::memcpy(event.request_id.data(), request_id.data(), request_id.size());
+        if (audit_.store().append(event) != AuditResult::Ok || hub_ledger_.mark_executable(request_id) != HubLedgerResult::Ok) {
+            hub_ledger_.complete(request_id, HubCommandState::Failed);
+            return json_response(request, "503 Service Unavailable", "{\"error\":\"Command was not accepted\"}");
+        }
+        FingerprintCommand command{FingerprintCommandType::HubOpen, 0, {}, Role::User, 0, AuditSource::Hub, request_id};
+        if (!fingerprints_.submit(command).id) {
+            hub_ledger_.complete(request_id, HubCommandState::Failed);
+            return json_response(request, "503 Service Unavailable", "{\"error\":\"Gate queue unavailable\"}");
+        }
+        return json_response(request, "202 Accepted", "{\"request_id\":" + json_quote(request_id) + ",\"state\":\"accepted\"}");
     }
     if (path == "/api/login") {
         const AuthResult result = auth_.login(fields["username"], fields["password"], now_ms(), &session);
@@ -232,9 +303,9 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
                 command.role = fields["role"] == "Master" ? Role::Master : Role::User;
             } else command.type = FingerprintCommandType::Delete;
         }
-        const uint32_t id = fingerprints_.submit(command);
-        if (!id) return json_response(request, "503 Service Unavailable", "{\"error\":\"Fingerprint command queue is full or unavailable\"}");
-        return json_response(request, "202 Accepted", "{\"command_id\":" + std::to_string(id) + "}");
+        const CommandReceipt receipt = fingerprints_.submit(command);
+        if (!receipt.id) return json_response(request, "503 Service Unavailable", "{\"error\":\"Fingerprint command queue is full or unavailable\"}");
+        return json_response(request, "202 Accepted", "{\"command_id\":" + std::to_string(receipt.id) + "}");
     }
     if (path == "/api/password") {
         const AuthResult result = auth_.change_password(token, csrf, fields["new_password"], now_ms());
