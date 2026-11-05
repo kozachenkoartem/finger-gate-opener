@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "audit_store.hpp"
+
 namespace fg {
 constexpr size_t kMaxAdminBody = 1024;
 constexpr char kSessionCookie[] = "__Host-fg_session";
@@ -14,4 +16,10 @@ bool parse_admin_json(const std::string& content_type, const std::string& body,
 std::string session_cookie_token(const std::string& cookies);
 std::string json_quote(const std::string& value);
 bool parse_unsigned(const std::string& value, uint32_t maximum, uint32_t* output);
+bool parse_event_cursor(const std::string& value, AuditCursor* output);
+struct EventQuery {
+    AuditCursor after;
+    size_t limit = 64;
+};
+bool parse_event_query(const std::string& query, EventQuery* output);
 }

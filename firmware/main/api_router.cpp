@@ -34,6 +34,55 @@ bool parse_unsigned(const std::string& value, uint32_t maximum, uint32_t* output
     return true;
 }
 
+bool parse_event_cursor(const std::string& text, AuditCursor* cursor)
+{
+    if (text.empty()) { *cursor = {}; return true; }
+    const size_t colon = text.find(':');
+    if (colon == 0 || colon == std::string::npos || colon + 1 == text.size() || text.find(':', colon + 1) != std::string::npos) return false;
+    uint64_t values[2]{};
+    size_t part = 0;
+    for (const char character : text) {
+        if (character == ':') { ++part; continue; }
+        if (character < '0' || character > '9' || values[part] > (UINT64_MAX - static_cast<uint64_t>(character - '0')) / 10) return false;
+        values[part] = values[part] * 10 + static_cast<uint64_t>(character - '0');
+    }
+    if (values[0] > UINT32_MAX) return false;
+    *cursor = {static_cast<uint32_t>(values[0]), values[1]};
+    return true;
+}
+bool parse_event_query(const std::string& query, EventQuery* output)
+{
+    if (!output) return false;
+    EventQuery parsed;
+    if (query.empty()) { *output = parsed; return true; }
+    bool seen_after = false;
+    bool seen_limit = false;
+    size_t start = 0;
+    while (start < query.size()) {
+        const size_t end = query.find('&', start);
+        const std::string field = query.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        const size_t separator = field.find('=');
+        if (separator == std::string::npos || field.find('=', separator + 1) != std::string::npos) return false;
+        const std::string key = field.substr(0, separator);
+        const std::string value = field.substr(separator + 1);
+        if (key == "after" && !seen_after) {
+            if (!parse_event_cursor(value, &parsed.after)) return false;
+            seen_after = true;
+        } else if (key == "limit" && !seen_limit) {
+            uint32_t limit = 0;
+            if (!parse_unsigned(value, 64, &limit) || limit == 0) return false;
+            parsed.limit = limit;
+            seen_limit = true;
+        } else {
+            return false;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    *output = parsed;
+    return true;
+}
+
 namespace {
 bool flat_object(const std::string& body)
 {
