@@ -64,6 +64,17 @@ std::string session_json(const Session& session)
     return "{\"csrf\":\"" + session.csrf + "\",\"password_change_required\":" +
         (session.password_change_required ? "true}" : "false}");
 }
+
+}
+
+void AdminServer::publish(AuditType type, AuditResultCode result)
+{
+    AuditRecord event;
+    event.type = type;
+    event.result = result;
+    event.source = AuditSource::Admin;
+    event.elapsed_ms = now_ms();
+    audit_.publish(event);
 }
 
 void AdminServer::start()
@@ -147,7 +158,10 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     if (path != "/api/login") {
         const bool allow_change = path == "/api/session" || path == "/api/password" || path == "/api/logout";
         const AuthResult access = auth_.authorize(token, csrf, mutation, allow_change, now_ms(), &session);
-        if (access != AuthResult::Ok) return auth_response(request, access);
+        if (access != AuthResult::Ok) {
+            publish(AuditType::Authentication, AuditResultCode::Rejected);
+            return auth_response(request, access);
+        }
     }
     std::map<std::string, std::string> fields;
     if (mutation) {
@@ -180,6 +194,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     if (path == "/api/login") {
         const AuthResult result = auth_.login(fields["username"], fields["password"], now_ms(), &session);
         ESP_LOGI(kLogTag, "Audit: login result %d", static_cast<int>(result));
+        publish(AuditType::Authentication, result == AuthResult::Ok ? AuditResultCode::Granted : AuditResultCode::Rejected);
         if (result != AuthResult::Ok) return auth_response(request, result);
         const std::string cookie = std::string(kSessionCookie) + "=" + session.token + "; Path=/; Secure; HttpOnly; SameSite=Strict";
         httpd_resp_set_hdr(request, "Set-Cookie", cookie.c_str());
@@ -224,11 +239,13 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
     if (path == "/api/password") {
         const AuthResult result = auth_.change_password(token, csrf, fields["new_password"], now_ms());
         ESP_LOGI(kLogTag, "Audit: password replacement result %d", static_cast<int>(result));
+        publish(AuditType::Authentication, result == AuthResult::Ok ? AuditResultCode::Accepted : AuditResultCode::Failed);
         if (result == AuthResult::Ok) clear_cookie(request);
         return auth_response(request, result);
     }
     if (path == "/api/logout") {
         const AuthResult result = auth_.logout(token, csrf, now_ms());
+        publish(AuditType::Authentication, result == AuthResult::Ok ? AuditResultCode::Accepted : AuditResultCode::Failed);
         if (result == AuthResult::Ok) clear_cookie(request);
         return auth_response(request, result);
     }
@@ -239,11 +256,16 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         const WifiCredentials credentials = operation == NetworkOperation::Configure ? WifiCredentials{fields["ssid"], fields["password"]} : WifiCredentials{};
         if ((operation == NetworkOperation::Configure && !valid_wifi_credentials(credentials)) ||
             (operation == NetworkOperation::ApPassword && !valid_ap_password(fields["password"]))) {
+            publish(AuditType::Network, AuditResultCode::Failed);
             return json_response(request, "400 Bad Request", "{\"error\":\"Invalid Wi-Fi settings; AP password must be 8 to 63 printable ASCII bytes\"}");
         }
         const uint32_t id = provisioning_.reserve(operation, credentials,
             operation == NetworkOperation::ApPassword ? fields["password"] : "");
-        if (!id) return json_response(request, "503 Service Unavailable", "{\"error\":\"Network operation busy or unavailable in current state\"}");
+        if (!id) {
+            publish(AuditType::Network, AuditResultCode::Failed);
+            return json_response(request, "503 Service Unavailable", "{\"error\":\"Network operation busy or unavailable in current state\"}");
+        }
+        publish(AuditType::Network, AuditResultCode::Accepted);
         const esp_err_t sent = json_response(request, "202 Accepted", "{\"command_id\":" + std::to_string(id) + "}");
         provisioning_.finish_response(id, sent == ESP_OK);
         return sent;

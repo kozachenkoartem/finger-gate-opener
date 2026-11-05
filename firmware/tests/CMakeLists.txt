@@ -25,8 +25,7 @@ add_test(NAME finger_gate_model_test COMMAND finger_gate_model_test)
 add_executable(user_store_test
     user_store_test.cpp
     ../main/finger_gate_model.cpp
-    ../main/user_store.cpp
-    ../main/audit_events.cpp)
+    ../main/user_store.cpp)
 
 target_compile_features(user_store_test PRIVATE cxx_std_17)
 target_include_directories(user_store_test PRIVATE ../main)
@@ -93,6 +92,8 @@ add_test(NAME auth_test COMMAND auth_test)
 add_executable(fingerprint_controller_test
     fingerprint_controller_test.cpp
     ../main/fingerprint_controller.cpp
+    ../main/audit_events.cpp
+    ../main/audit_store.cpp
     ../main/user_store.cpp
     ../main/finger_gate_model.cpp)
 
@@ -112,6 +113,11 @@ add_executable(audit_store_test audit_store_test.cpp ../main/audit_store.cpp)
 target_compile_features(audit_store_test PRIVATE cxx_std_17)
 target_include_directories(audit_store_test PRIVATE ../main)
 add_test(NAME audit_store_test COMMAND audit_store_test)
+
+add_executable(audit_events_test audit_events_test.cpp ../main/audit_events.cpp ../main/audit_store.cpp)
+target_compile_features(audit_events_test PRIVATE cxx_std_17)
+target_include_directories(audit_events_test PRIVATE ../main)
+add_test(NAME audit_events_test COMMAND audit_events_test)
 
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)

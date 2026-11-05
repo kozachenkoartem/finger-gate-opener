@@ -1,7 +1,6 @@
 #include <cstdlib>
 #include <iostream>
 
-#include "audit_events.hpp"
 #include "user_store.hpp"
 
 namespace {
@@ -72,15 +71,6 @@ void test_malformed_record_quarantines_only_affected_slot()
             "unaffected slots must remain usable");
 }
 
-void test_audit_queue_drops_when_full()
-{
-    fg::AuditEventSink events(2);
-    require(events.publish({fg::AuditEventType::Recognition, 1}), "first event must enqueue");
-    require(events.publish({fg::AuditEventType::Recognition, 2}), "second event must enqueue");
-    require(!events.publish({fg::AuditEventType::Recognition, 3}), "full queue must reject event without blocking");
-    require(events.dropped_count() == 1, "dropped event count must be retained");
-}
-
 }
 
 int main()
@@ -88,6 +78,5 @@ int main()
     test_pending_add_is_quarantined_until_committed();
     test_pending_delete_is_quarantined_and_commit_revokes_access();
     test_malformed_record_quarantines_only_affected_slot();
-    test_audit_queue_drops_when_full();
     return EXIT_SUCCESS;
 }

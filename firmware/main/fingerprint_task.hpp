@@ -15,7 +15,7 @@ namespace fg {
 struct CommandReceipt { uint32_t id = 0; std::string result; };
 class FingerprintTask {
 public:
-    explicit FingerprintTask(KeyValueStore& storage) : storage_(storage) {}
+    FingerprintTask(KeyValueStore& storage, AuditPublisher& audit) : storage_(storage), audit_(audit) {}
     void start();
     void set_provisioning(ProvisioningIndicatorState state);
     uint32_t submit(const FingerprintCommand& command);
@@ -29,12 +29,14 @@ private:
         char name[65];
         Role role;
         uint32_t operation_id;
+        AuditSource source;
     };
     static void task_entry(void* context);
     void run();
     void publish(const FingerprintSnapshot& snapshot);
 
     KeyValueStore& storage_;
+    AuditPublisher& audit_;
     QueueHandle_t indication_queue_ = nullptr;
     QueueHandle_t command_queue_ = nullptr;
     std::atomic<uint32_t> next_command_id_{1};

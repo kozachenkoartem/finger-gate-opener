@@ -1,6 +1,7 @@
 #include "fingerprint_controller.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 namespace fg {
 namespace {
@@ -24,9 +25,36 @@ std::string registry_error(RegistryResult result)
 }
 
 FingerprintController::FingerprintController(KeyValueStore& storage, FingerprintSensor& sensor,
-                                           FingerprintGate& gate, FingerprintClock& clock)
-    : store_(storage), sensor_(sensor), gate_(gate), clock_(clock)
+                                            FingerprintGate& gate, FingerprintClock& clock, AuditPublisher& audit)
+    : store_(storage), sensor_(sensor), gate_(gate), clock_(clock), audit_(audit)
 {
+}
+
+bool FingerprintController::audit_idle() const
+{
+    return recognition_ == Recognition::Idle && !status_.enrolling;
+}
+
+void FingerprintController::publish(AuditType type, AuditResultCode result, uint16_t slot, const std::string& name,
+                                    AuditSource source)
+{
+    AuditRecord event;
+    event.type = type;
+    event.result = result;
+    event.source = source;
+    event.slot = slot;
+    event.elapsed_ms = clock_.now_ms();
+    std::memcpy(event.name.data(), name.data(), std::min(name.size(), event.name.size() - 1));
+    audit_.publish(event);
+}
+
+void FingerprintController::rejected_match(uint16_t slot)
+{
+    const auto now = clock_.now_ms();
+    if (has_rejected_audit_ && now - last_rejected_audit_ms_ < kRetryMs) return;
+    has_rejected_audit_ = true;
+    last_rejected_audit_ms_ = now;
+    publish(AuditType::Access, AuditResultCode::Rejected, slot);
 }
 
 void FingerprintController::initialize()
@@ -73,7 +101,7 @@ std::string FingerprintController::command(const FingerprintCommand& command)
     if (!status_.ready) return "not_ready";
     if (status_.enrolling) return "busy";
     if (command.type == FingerprintCommandType::Enroll)
-        return start_enrollment(command.name, command.operation_id);
+        return start_enrollment(command.name, command.operation_id, command.source);
     if (command.slot >= UserRegistry::kSlotCount) return "invalid_slot";
     if (status_.quarantined.test(command.slot)) return "slot_quarantined";
     const auto previous = registry_.find(command.slot);
@@ -96,6 +124,7 @@ std::string FingerprintController::command(const FingerprintCommand& command)
         metadata_.reset(command.slot);
         status_.quarantined.reset(command.slot);
         reset_gesture();
+        publish(AuditType::User, AuditResultCode::Accepted, command.slot, previous->name, command.source);
         return "ok";
     }
 
@@ -117,10 +146,12 @@ std::string FingerprintController::command(const FingerprintCommand& command)
     }
     registry_ = std::move(next);
     reset_gesture();
+    publish(AuditType::User, AuditResultCode::Accepted, command.slot, command.name.empty() ? previous->name : command.name,
+            command.source);
     return "ok";
 }
 
-std::string FingerprintController::start_enrollment(const std::string& name, uint32_t operation_id)
+std::string FingerprintController::start_enrollment(const std::string& name, uint32_t operation_id, AuditSource source)
 {
     uint16_t slot = 0;
     for (; slot < UserRegistry::kSlotCount; ++slot) {
@@ -141,6 +172,7 @@ std::string FingerprintController::start_enrollment(const std::string& name, uin
     status_.enrolling = true;
     status_.message = "enrollment_started";
     enrollment_started_ms_ = clock_.now_ms();
+    enrollment_source_ = source;
     staged_ = false;
     store_attempted_ = false;
     enrollment_ = release_known_ && !raw_touch_ && !stable_touch_ ? Enrollment::Touch : Enrollment::Release;
@@ -167,6 +199,8 @@ void FingerprintController::finish_enrollment(bool success, const std::string& m
     recognition_ = Recognition::Idle;
     armed_ = release_known_ && !stable_touch_ && !raw_touch_;
     signal_ = success ? FingerprintSignal::Success : FingerprintSignal::Failure;
+    publish(AuditType::Enrollment, success ? AuditResultCode::Granted : AuditResultCode::Failed, candidate_.slot,
+            candidate_.name, enrollment_source_);
 }
 
 void FingerprintController::abort_enrollment(const std::string& message)
@@ -342,6 +376,7 @@ void FingerprintController::match(uint16_t slot)
     if (!user || !user->active || status_.quarantined.test(slot)) {
         status_.last_access = "denied";
         reset_gesture();
+        rejected_match(slot);
         signal_ = FingerprintSignal::Failure;
         return;
     }
@@ -355,8 +390,11 @@ void FingerprintController::match(uint16_t slot)
         if (gesture_count_ == 3) local_enrollment_pending_ = true;
     } else reset_gesture();
 
+    publish(AuditType::Access, AuditResultCode::Granted, slot, user->name);
+
     if (pulse_started_ && (now < pulse_started_ms_ || now - pulse_started_ms_ < kCooldownMs)) {
         status_.last_access = "cooldown";
+        publish(AuditType::Gate, AuditResultCode::Rejected, slot, user->name);
         signal_ = FingerprintSignal::Success;
         return;
     }
@@ -365,10 +403,13 @@ void FingerprintController::match(uint16_t slot)
         pulse_started_ = true;
         pulse_started_ms_ = pulse.started_ms;
         status_.last_access = "granted";
+        publish(AuditType::Gate, AuditResultCode::Granted, slot, user->name);
         signal_ = FingerprintSignal::Success;
     } else {
         status_.last_access = "actuator_rejected";
+        publish(AuditType::Gate, AuditResultCode::Rejected, slot, user->name);
         signal_ = FingerprintSignal::Failure;
+        rejected_match(0);
     }
 }
 
@@ -390,6 +431,7 @@ void FingerprintController::recognition_tick()
         status_.last_access = "capture_failed";
         reset_gesture();
         signal_ = FingerprintSignal::Failure;
+        rejected_match(0);
         break;
     case Recognition::Convert:
         if (sensor_.convert(1, kShortWaitMs).code == SensorCode::Ok) {
@@ -408,6 +450,7 @@ void FingerprintController::recognition_tick()
         else {
             status_.last_access = reply.code == SensorCode::NotFound ? "not_found" : "search_failed";
             reset_gesture();
+            rejected_match(reply.code == SensorCode::Ok ? reply.slot : 0);
             signal_ = FingerprintSignal::Failure;
         }
         break;
@@ -443,7 +486,7 @@ void FingerprintController::tick(bool touch_active)
     if (local_enrollment_pending_ && release_known_ && !stable_touch_ && !raw_touch_) {
         // Локальные идентификаторы отделены старшим битом от идентификаторов HTTP.
         local_operation_id_ = ((local_operation_id_ + 1) | kLocalIdBit);
-        const auto result = start_enrollment({}, local_operation_id_);
+        const auto result = start_enrollment({}, local_operation_id_, AuditSource::Fingerprint);
         if (result != "ok") {
             reset_gesture();
             status_.message = result;

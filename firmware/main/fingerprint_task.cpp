@@ -118,6 +118,7 @@ uint32_t FingerprintTask::submit(const FingerprintCommand& command)
     queued.slot = command.slot;
     queued.role = command.role;
     queued.operation_id = command.operation_id;
+    queued.source = command.source;
     std::memcpy(queued.name, command.name.data(), command.name.size());
     return xQueueSend(command_queue_, &queued, 0) == pdTRUE ? queued.id : 0;
 }
@@ -173,7 +174,7 @@ void FingerprintTask::run()
     driver_.initialize();
     SensorAdapter sensor(driver_);
     Clock clock;
-    std::unique_ptr<FingerprintController> controller(new (std::nothrow) FingerprintController(storage_, sensor, gate_, clock));
+    std::unique_ptr<FingerprintController> controller(new (std::nothrow) FingerprintController(storage_, sensor, gate_, clock, audit_));
     if (!controller) { ESP_LOGE(kLogTag, "Controller allocation failed"); return; }
     controller->initialize();
     {
@@ -193,13 +194,25 @@ void FingerprintTask::run()
         // Не более одной веб-команды за проход: очередь не вытесняет распознавание.
         if (xQueueReceive(command_queue_, &queued, 0) == pdTRUE) {
             FingerprintCommand command{queued.type, queued.slot, queued.name, queued.role,
-                queued.type == FingerprintCommandType::Enroll ? queued.id : queued.operation_id};
+                queued.type == FingerprintCommandType::Enroll ? queued.id : queued.operation_id, queued.source};
             const auto result = controller->command(command);
+            if (result != "ok") {
+                AuditRecord event;
+                event.type = queued.type == FingerprintCommandType::Enroll ? AuditType::Enrollment : AuditType::User;
+                event.result = AuditResultCode::Failed;
+                event.source = queued.source;
+                event.slot = queued.slot;
+                event.elapsed_ms = clock.now_ms();
+                std::memcpy(event.name.data(), queued.name, sizeof(event.name) - 1);
+                audit_.publish(event);
+            }
             receipts_[receipt_index_++ % receipts_.size()] = {queued.id, result};
             ESP_LOGI(kLogTag, "Audit: command %lu type %d result %s", static_cast<unsigned long>(queued.id), static_cast<int>(queued.type), result.c_str());
             changed = true;
         }
         controller->tick(gpio_get_level(kTouchPin) != 0);
+        // Erase-capable storage work runs only between recognition/enrollment steps.
+        if (controller->audit_idle()) audit_.drain(1);
         const auto signal = controller->take_signal();
         const auto now = clock.now_ms();
         if (changed || signal != FingerprintSignal::None || now >= next_snapshot) {

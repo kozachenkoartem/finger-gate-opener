@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "user_store.hpp"
+#include "audit_events.hpp"
 
 namespace fg {
 
@@ -47,6 +48,7 @@ struct FingerprintCommand {
     std::string name;
     Role role = Role::User;
     uint32_t operation_id = 0;
+    AuditSource source = AuditSource::Admin;
 };
 enum class FingerprintSignal { None, Success, Failure, Enrollment };
 struct FingerprintSnapshot {
@@ -65,12 +67,13 @@ struct FingerprintSnapshot {
 
 class FingerprintController {
 public:
-    FingerprintController(KeyValueStore&, FingerprintSensor&, FingerprintGate&, FingerprintClock&);
+    FingerprintController(KeyValueStore&, FingerprintSensor&, FingerprintGate&, FingerprintClock&, AuditPublisher&);
     void initialize();
     std::string command(const FingerprintCommand&);
     void tick(bool touch_active);
     FingerprintSnapshot snapshot() const;
     FingerprintSignal take_signal();
+    bool audit_idle() const;
 
 private:
     enum class Recognition { Idle, Capture, Convert, Search };
@@ -87,7 +90,7 @@ private:
     static constexpr auto kMutationWaitMs = 500U;
     static constexpr auto kLocalIdBit = uint32_t{1} << 31;
 
-    std::string start_enrollment(const std::string&, uint32_t);
+    std::string start_enrollment(const std::string&, uint32_t, AuditSource source);
     void enrollment_tick();
     void finish_enrollment(bool success, const std::string& message);
     void abort_enrollment(const std::string& message);
@@ -96,11 +99,15 @@ private:
     void reset_gesture();
     void quarantine(uint16_t slot);
     uint32_t wait_budget(uint32_t maximum) const;
+    void publish(AuditType type, AuditResultCode result, uint16_t slot, const std::string& name = {},
+                 AuditSource source = AuditSource::Fingerprint);
+    void rejected_match(uint16_t slot);
 
     UserStore store_;
     FingerprintSensor& sensor_;
     FingerprintGate& gate_;
     FingerprintClock& clock_;
+    AuditPublisher& audit_;
     UserRegistry registry_;
     std::bitset<UserRegistry::kSlotCount> occupied_;
     std::bitset<UserRegistry::kSlotCount> metadata_;
@@ -126,6 +133,9 @@ private:
     uint64_t gesture_started_ms_ = 0;
     bool local_enrollment_pending_ = false;
     uint32_t local_operation_id_ = kLocalIdBit;
+    AuditSource enrollment_source_ = AuditSource::Admin;
+    uint64_t last_rejected_audit_ms_ = 0;
+    bool has_rejected_audit_ = false;
 };
 
 }

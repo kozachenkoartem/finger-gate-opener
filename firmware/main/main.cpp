@@ -7,6 +7,8 @@
 #include "freertos/task.h"
 
 #include "fingerprint_task.hpp"
+#include "audit_events.hpp"
+#include "audit_store.hpp"
 #include "provisioning.hpp"
 #include "nvs_storage.hpp"
 #include "http_server.hpp"
@@ -111,12 +113,17 @@ extern "C" void app_main()
         ESP_LOGE(kLogTag, "NVS initialization failed; provisioning is disabled");
         return;
     }
-    static fg::FingerprintTask fingerprint_task(storage);
+    static fg::EspAuditStorage audit_storage;
+    static fg::AuditStore audit_store(audit_storage);
+    static fg::AuditPublisher audit(audit_store);
+    if (audit_store.initialize() != fg::AuditResult::Ok)
+        ESP_LOGE(kLogTag, "Audit storage unavailable; local fingerprint access remains enabled");
+    static fg::FingerprintTask fingerprint_task(storage, audit);
     fingerprint_task.start();
     static fg::Provisioning provisioning(storage, fingerprint_task);
     const esp_err_t network_result = provisioning.start();
     if (network_result == ESP_OK) {
-        static fg::AdminServer admin(storage, provisioning, fingerprint_task);
+        static fg::AdminServer admin(storage, provisioning, fingerprint_task, audit);
         admin.start();
     } else {
         ESP_LOGE(kLogTag, "Networking unavailable: %s", esp_err_to_name(network_result));

@@ -1,4 +1,5 @@
 #include "fingerprint_controller.hpp"
+#include "audit_events.hpp"
 
 #include <cstdlib>
 #include <deque>
@@ -151,11 +152,15 @@ struct Sensor final : FingerprintSensor {
 
 struct Fixture {
     Storage storage;
+    MemoryAuditStorage audit_storage;
+    AuditStore audit_store{audit_storage};
+    AuditPublisher audit{audit_store, 32};
     Clock clock;
     Gate gate{clock};
     Sensor sensor{storage, clock};
     std::unique_ptr<FingerprintController> controller;
     bool touch = false;
+    bool audit_available = true;
     std::bitset<UserRegistry::kSlotCount> occupied;
 
     void seed(uint16_t slot, Role role = Role::User, bool active = true)
@@ -168,7 +173,8 @@ struct Fixture {
     void boot(SensorCode code = SensorCode::Ok)
     {
         sensor.expect_index(occupied, code);
-        controller.reset(new FingerprintController(storage, sensor, gate, clock));
+        if (audit_available) require(audit_store.initialize() == AuditResult::Ok, "audit store initialize");
+        controller.reset(new FingerprintController(storage, sensor, gate, clock, audit));
         controller->initialize();
     }
     FingerprintSnapshot state() const { return controller->snapshot(); }
@@ -237,6 +243,13 @@ struct Fixture {
         ticks(3);
     }
     void done() const { require(sensor.steps.empty(), "scripted transactions were not executed"); }
+    std::vector<AuditRecord> events()
+    {
+        audit.drain(32);
+        AuditPage page;
+        require(audit_store.read_after({}, 32, &page) == AuditResult::Ok, "read audit events");
+        return page.events;
+    }
 };
 
 void test_boot_reconciliation_and_retry()
@@ -1040,6 +1053,86 @@ void test_master_gesture_release_reset_and_fixed_window()
     window.done();
 }
 
+void test_persistent_audit_producers()
+{
+    Fixture f;
+    f.seed(1, Role::Master);
+    f.boot();
+    f.recognition(1, 100);
+    f.recognition(99, 10200);
+    f.recognition(99, 10300);
+    const auto before_accepted = f.events().size();
+    f.recognition(1, 10400);
+    const auto events = f.events();
+    require(events.size() == before_accepted + 2, "accepted match and gate decision must never be rate limited");
+    require(events[0].type == AuditType::Access && events[0].result == AuditResultCode::Granted &&
+                events[0].source == AuditSource::Fingerprint && events[0].slot == 1,
+            "successful match audit fields");
+    require(events[1].type == AuditType::Gate && events[1].result == AuditResultCode::Granted,
+            "gate decision audit fields");
+    require(events[2].type == AuditType::Access && events[2].result == AuditResultCode::Rejected &&
+                events[2].slot == 99,
+            "rejected match audit fields");
+    require(events[3].type == AuditType::Access && events[3].result == AuditResultCode::Granted,
+            "later accepted match audit fields");
+    require(events[4].type == AuditType::Gate && events[4].result == AuditResultCode::Granted,
+            "later gate decision audit fields");
+    f.done();
+}
+
+void test_enrollment_and_user_mutation_audit_fields()
+{
+    Fixture f;
+    f.seed(1);
+    f.boot();
+    require(f.controller->command({FingerprintCommandType::Rename, 1, "Alice"}) == "ok", "rename user");
+    auto events = f.events();
+    require(events.size() == 1 && events[0].type == AuditType::User &&
+                events[0].result == AuditResultCode::Accepted && events[0].source == AuditSource::Admin &&
+                events[0].slot == 1 && std::string(events[0].name.data()) == "Alice",
+            "user mutation audit fields");
+
+    f.release();
+    require(f.enroll("Bob", 42) == "ok", "enrollment start");
+    f.four_scans();
+    f.stage();
+    f.store();
+    f.tick();
+    events = f.events();
+    require(events.size() == 2 && events[1].type == AuditType::Enrollment &&
+                events[1].result == AuditResultCode::Granted && events[1].source == AuditSource::Admin &&
+                events[1].slot == 0 && std::string(events[1].name.data()) == "Bob",
+            "enrollment completion audit fields");
+    f.done();
+}
+
+void test_audit_storage_waits_for_recognition_idle()
+{
+    Fixture f;
+    f.seed(1);
+    f.boot();
+    f.sensor.expect("capture");
+    f.sensor.expect("convert", SensorCode::Ok, 1);
+    f.sensor.expect("search", SensorCode::Ok, 1, 1);
+    f.press();
+    require(!f.controller->audit_idle(), "capture must defer audit storage");
+    f.ticks(3);
+    require(f.controller->audit_idle(), "completed recognition may drain audit storage");
+    f.done();
+}
+
+void test_audit_failure_does_not_block_local_access()
+{
+    Fixture f;
+    f.audit_available = false;
+    f.seed(1);
+    f.boot();
+    f.recognition(1, 100);
+    require(f.gate.calls == 1 && f.state().last_access == "granted", "audit storage failure must not change access");
+    require(f.audit.drain(8) == 0 && f.audit.failed_count() == 2, "unavailable audit records must be dropped after access");
+    f.done();
+}
+
 }
 
 int main(int argc, char** argv)
@@ -1066,6 +1159,10 @@ int main(int argc, char** argv)
         {"sensor failures", test_sensor_failures_and_invalid_match},
         {"absolute deadline budgets", test_deadline_budgets_and_post_store_timeout},
         {"master gesture", test_master_gesture_release_reset_and_fixed_window},
+        {"persistent audit producers", test_persistent_audit_producers},
+        {"enrollment and user audit producers", test_enrollment_and_user_mutation_audit_fields},
+        {"audit storage recognition idle", test_audit_storage_waits_for_recognition_idle},
+        {"audit failure preserves local access", test_audit_failure_does_not_block_local_access},
     };
     unsigned executed = 0;
     for (const auto& test : tests) {
