@@ -43,7 +43,9 @@ CSRF headers, unexpected JSON fields, and oversized bodies.
 
 Event IDs are opaque `<epoch>:<sequence>` strings so JavaScript clients do not
 lose 64-bit precision. A REST cursor or SSE `Last-Event-ID` from another epoch,
-and retained range. The client must reset its cursor and read available history.
+outside the retained range, or after the newest event receives `409 Conflict`
+with the retained range. The client must reset its cursor and read available
+history.
 
 ## SSE
 

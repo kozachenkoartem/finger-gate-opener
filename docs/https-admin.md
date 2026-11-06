@@ -44,6 +44,10 @@
 | `POST /api/acknowledge` | JSON `{}`; закрывает AP после отправки ответа |
 | `POST /api/network/recovery` | JSON `{}`; временный AP для смены сети |
 | `POST /api/network/ap-password` | JSON `password`; индивидуальный пароль AP |
+| `POST /api/hub/token` | JSON `{}`; создать или ротировать token Atlas, вернуть один раз |
+| `DELETE /api/hub/token` | JSON `{}`; отозвать token Atlas |
+| `GET /api/audit` | Просмотр постоянного журнала администратора |
+| `POST /api/audit/clear` | JSON `{}`; очистить постоянный журнал |
 
 Кроме login все API требуют cookie; POST также требует `X-CSRF-Token`.
 Во время обязательной замены пароля разрешены только session/password/logout.
