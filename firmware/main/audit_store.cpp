@@ -120,7 +120,7 @@ AuditResult AuditStore::initialize()
     std::lock_guard<std::mutex> guard(g_lock);
     if (storage_.size() != kPartitionSize) return AuditResult::Invalid;
 
-    std::array<uint8_t, kSectorSize> sector{};
+    std::vector<uint8_t> sector(kSectorSize);
     Metadata newest{};
     int newest_slot = -1;
     bool current_metadata = false;
@@ -170,8 +170,8 @@ AuditResult AuditStore::initialize()
 AuditResult AuditStore::write_metadata(bool clearing, uint32_t epoch, uint64_t reserved_next)
 {
     const int target_slot = metadata_slot_ == 0 ? 1 : 0;
-    std::array<uint8_t, kSectorSize> bytes{};
-    bytes.fill(0xff);
+    std::vector<uint8_t> bytes(kSectorSize);
+    std::fill(bytes.begin(), bytes.end(), 0xff);
     put<uint32_t>(bytes.data(), 0, kMetadataMagic);
     put<uint16_t>(bytes.data(), 4, kFormatVersion);
     bytes[6] = clearing ? 1 : 0;
@@ -183,7 +183,7 @@ AuditResult AuditStore::write_metadata(bool clearing, uint32_t epoch, uint64_t r
     if (result != AuditResult::Ok) return result;
     result = storage_.write(target_slot * kSectorSize, bytes.data(), bytes.size());
     if (result != AuditResult::Ok) return result;
-    std::array<uint8_t, kSectorSize> verify{};
+    std::vector<uint8_t> verify(kSectorSize);
     result = storage_.read(target_slot * kSectorSize, verify.data(), verify.size());
     if (result != AuditResult::Ok || std::memcmp(bytes.data(), verify.data(), bytes.size()) != 0) return AuditResult::Unavailable;
     ++metadata_generation_;
@@ -272,7 +272,7 @@ AuditResult AuditStore::append(AuditRecord event)
     }
     const size_t oldest_sector = (records.front().offset - kDataOffset) / kSectorSize;
     size_t spare_sector = kRecordSectors + 1;
-    std::array<uint8_t, kSectorSize> sector{};
+    std::vector<uint8_t> sector(kSectorSize);
     for (size_t index = 0; index <= kRecordSectors; ++index) {
         result = storage_.read(kDataOffset + index * kSectorSize, sector.data(), sector.size());
         if (result != AuditResult::Ok) return result;
