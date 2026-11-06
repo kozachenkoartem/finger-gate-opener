@@ -15,6 +15,20 @@
 
 namespace fg {
 namespace {
+const char* hub_command_state_name(HubCommandState state)
+{
+    switch (state) {
+    case HubCommandState::Reserved: return "reserved";
+    case HubCommandState::Executable: return "accepted";
+    case HubCommandState::Running: return "running";
+    case HubCommandState::Granted: return "granted";
+    case HubCommandState::Rejected: return "rejected";
+    case HubCommandState::Interrupted: return "interrupted";
+    case HubCommandState::Cancelled: return "cancelled";
+    case HubCommandState::Failed: return "failed";
+    }
+    return "failed";
+}
 constexpr char kLogTag[] = "admin_https";
 constexpr size_t kMaxHeader = 1024;
 constexpr uint32_t kServerStartupStack = 12288;
@@ -412,7 +426,7 @@ esp_err_t AdminServer::handle(httpd_req_t* request)
         if (reserved == HubLedgerResult::Duplicate) {
             HubCommand command;
             hub_ledger_.get(request_id, &command);
-            return json_response(request, "202 Accepted", "{\"request_id\":" + json_quote(request_id) + ",\"state\":" + std::to_string(static_cast<unsigned>(command.state)) + "}");
+            return json_response(request, "202 Accepted", "{\"request_id\":" + json_quote(request_id) + ",\"state\":" + json_quote(hub_command_state_name(command.state)) + "}");
         }
         if (reserved != HubLedgerResult::Ok) return json_response(request, reserved == HubLedgerResult::Invalid ? "400 Bad Request" : "503 Service Unavailable", "{\"error\":\"Command unavailable\"}");
         AuditRecord event;
